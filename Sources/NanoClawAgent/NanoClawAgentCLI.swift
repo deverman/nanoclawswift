@@ -3,7 +3,7 @@ import Foundation
 
 @main
 struct NanoClawAgentCLI: AsyncParsableCommand {
-    @Option(name: .shortAndLong, help: "Path to config JSON file")
+    @Option(name: [.customShort("c"), .long], help: "Path to config JSON file")
     var config: String = "/workspace/config.json"
     
     @Option(name: [.customShort("g"), .long], help: "Group folder name")
@@ -26,15 +26,12 @@ struct NanoClawAgentCLI: AsyncParsableCommand {
         
         print("[agent-runner] Starting NanoClawSwift Agent...", to: &stderr)
         
-        // Load configuration
         let config = try await ConfigLoader.load(from: config)
         print("[agent-runner] Configuration loaded for provider: \(config.provider)", to: &stderr)
         
-        // Read prompt from stdin
-        let prompt = try await Self.readStdin()
+        let prompt = try await readStdin()
         print("[agent-runner] Received prompt (\(prompt.count) chars)", to: &stderr)
         
-        // Create and run agent - use the async init with full parameters
         let agent = await NanoClawAgent(
             config: config,
             groupFolder: groupFolder,
@@ -51,30 +48,27 @@ struct NanoClawAgentCLI: AsyncParsableCommand {
             isScheduledTask: isScheduledTask
         )
         
-        // Output result with markers
         print("---NANOCLAW_OUTPUT_START---")
         print(result.json)
         print("---NANOCLAW_OUTPUT_END---")
     }
-    
-    /// Reads all data from stdin asynchronously
-    static func readStdin() async throws -> String {
-        let handle = FileHandle.standardInput
-        let data = handle.readDataToEndOfFile()
-        guard let string = String(data: data, encoding: .utf8) else {
-            throw CLIError.invalidInput("Could not decode stdin as UTF-8")
-        }
-        return string
+}
+
+func readStdin() async throws -> String {
+    let handle = FileHandle.standardInput
+    let data = handle.readDataToEndOfFile()
+    guard let string = String(data: data, encoding: .utf8) else {
+        throw CLIError.invalidInput("Could not decode stdin as UTF-8")
     }
-    
-    /// Standard error output stream for prints
-    struct StandardError: TextOutputStream {
-        mutating func write(_ string: String) {
-            FileHandle.standardError.write(Data(string.utf8))
-        }
+    return string
+}
+
+struct StandardError: TextOutputStream {
+    mutating func write(_ string: String) {
+        FileHandle.standardError.write(Data(string.utf8))
     }
-    
-    enum CLIError: Error {
-        case invalidInput(String)
-    }
+}
+
+enum CLIError: Error {
+    case invalidInput(String)
 }

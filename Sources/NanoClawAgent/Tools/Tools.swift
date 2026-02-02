@@ -13,6 +13,17 @@ public enum ToolError: Error, Sendable {
     case commandFailed(command: String, exitCode: Int, output: String)
 }
 
+// MARK: - Path Helpers
+
+private func resolveBasePath() -> String {
+    ProcessInfo.processInfo.environment["NANOCLAW_BASE_PATH"] ?? "/workspace/group"
+}
+
+private func resolvePath(_ path: String) -> String {
+    if path.hasPrefix("/") { return path }
+    return "\(resolveBasePath())/\(path)"
+}
+
 // MARK: - ReadTool
 
 /// Tool for reading files from the filesystem.
@@ -29,7 +40,7 @@ public struct ReadTool: Tool, Sendable {
             throw AgentError.invalidToolArguments(toolName: name, reason: "Missing file_path parameter")
         }
         
-        let fullPath = "/workspace/group/\(filePath)"
+        let fullPath = resolvePath(filePath)
         
         guard FileManager.default.fileExists(atPath: fullPath) else {
             throw ToolError.fileNotFound(filePath)
@@ -67,7 +78,7 @@ public struct WriteTool: Tool, Sendable {
             throw AgentError.invalidToolArguments(toolName: name, reason: "Missing content parameter")
         }
         
-        let fullPath = "/workspace/group/\(filePath)"
+        let fullPath = resolvePath(filePath)
         let url = URL(fileURLWithPath: fullPath)
         
         // Ensure parent directory exists
@@ -114,7 +125,7 @@ public struct EditTool: Tool, Sendable {
             throw AgentError.invalidToolArguments(toolName: name, reason: "Missing replace parameter")
         }
         
-        let fullPath = "/workspace/group/\(filePath)"
+        let fullPath = resolvePath(filePath)
         
         guard FileManager.default.fileExists(atPath: fullPath) else {
             throw ToolError.fileNotFound(filePath)
@@ -158,7 +169,7 @@ public struct GlobTool: Tool, Sendable {
             throw AgentError.invalidToolArguments(toolName: name, reason: "Missing pattern parameter")
         }
         
-        let basePath = "/workspace/group"
+        let basePath = resolveBasePath()
         let results = try glob(pattern: pattern, in: basePath)
         return .string(results.joined(separator: "\n"))
     }
@@ -243,7 +254,7 @@ public struct GrepTool: Tool, Sendable {
             throw AgentError.invalidToolArguments(toolName: name, reason: "Missing file_pattern parameter")
         }
         
-        let basePath = "/workspace/group"
+        let basePath = resolveBasePath()
         let globTool = GlobTool()
         let globResult = try await globTool.execute(arguments: [
             "pattern": .string(filePattern)
@@ -306,9 +317,9 @@ public struct BashTool: Tool, Sendable {
         process.arguments = ["-c", command]
         
         if let workingDir = arguments["working_dir"]?.stringValue {
-            process.currentDirectoryURL = URL(fileURLWithPath: "/workspace/group/\(workingDir)")
+            process.currentDirectoryURL = URL(fileURLWithPath: resolvePath(workingDir))
         } else {
-            process.currentDirectoryURL = URL(fileURLWithPath: "/workspace/group")
+            process.currentDirectoryURL = URL(fileURLWithPath: resolveBasePath())
         }
         
         let pipe = Pipe()

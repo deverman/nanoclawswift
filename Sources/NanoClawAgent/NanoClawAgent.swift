@@ -211,21 +211,6 @@ public actor NanoClawAgent: Agent {
                 await memory.add(.user(input))
             }
             
-            // Build context from memory
-            let contextString = if let memory {
-                await memory.context(for: input, tokenLimit: 4000)
-            } else {
-                ""
-            }
-            
-            // Construct the full prompt with context and instructions
-            let fullPrompt = Self.buildPrompt(
-                input: input,
-                instructions: instructions,
-                context: contextString,
-                tools: tools
-            )
-            
             // Create tool registry for execution
             let toolRegistry = ToolRegistry(tools: tools)
             
@@ -233,6 +218,7 @@ public actor NanoClawAgent: Agent {
             var iterations = 0
             let maxIterations = 10
             var finalOutput: String?
+            var toolCallsExecuted = false
             
             while iterations < maxIterations && finalOutput == nil {
                 iterations += 1
@@ -241,6 +227,31 @@ public actor NanoClawAgent: Agent {
                 // Check for cancellation
                 try Task.checkCancellation()
                 
+                // Build context from memory on each iteration
+                let contextString = if let memory {
+                    await memory.context(for: input, tokenLimit: 4000)
+                } else {
+                    ""
+                }
+                
+                // Construct the full prompt with context and instructions
+                let fullPrompt = Self.buildPrompt(
+                    input: input,
+                    instructions: instructions,
+                    context: contextString,
+                    tools: tools
+                )
+                
+                // If we've already executed tool calls, ask for a final response without tools
+                if toolCallsExecuted {
+                    let finalResponse = try await inferenceProvider?.generate(
+                        prompt: fullPrompt,
+                        options: InferenceOptions.default
+                    )
+                    finalOutput = finalResponse ?? "I apologize, but I couldn't generate a response."
+                    break
+                }
+
                 // Generate response with potential tool calls
                 if let hooks {
                     await hooks.onLLMStart(context: nil, agent: self, systemPrompt: instructions, inputMessages: [])
@@ -319,6 +330,8 @@ public actor NanoClawAgent: Agent {
                             await memory.add(.tool(toolResult.description, toolName: toolCall.name))
                         }
                     }
+                    // Tool calls executed; next iteration will request final response
+                    toolCallsExecuted = true
                 } else if let content = inferenceResponse.content {
                     // Final response
                     finalOutput = content

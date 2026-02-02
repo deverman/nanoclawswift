@@ -1,8 +1,9 @@
 import SwiftAgents
 import Foundation
 
-/// Simplified provider for OpenAI-compatible APIs (Kimi, OpenAI, Anthropic)
+/// Provider for OpenAI-compatible APIs (Kimi, OpenAI, Anthropic)
 /// Includes retry logic with exponential backoff for 429 (rate limit) errors
+/// Supports full tool calling with ReAct pattern
 public actor OpenAICompatibleProvider: InferenceProvider {
     private let apiKey: String
     private let baseURL: URL
@@ -38,22 +39,28 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         options: InferenceOptions
     ) async throws -> String {
         let messages = [["role": "user", "content": prompt]]
-        return try await chatCompletionWithRetry(messages: messages, options: options)
+        return try await chatCompletionWithRetry(messages: messages, options: options, tools: nil)
     }
     
+    /// Generates a response with potential tool calls (ReAct pattern)
     public func generateWithToolCalls(
         prompt: String,
         tools: [ToolDefinition],
         options: InferenceOptions
     ) async throws -> InferenceResponse {
-        // For now, just generate without tools to avoid complexity
-        // This is a placeholder - full tool support needs more work
-        let content = try await generate(prompt: prompt, options: options)
+        let messages = [["role": "user", "content": prompt]]
+        
+        // Initial call with tools
+        let (content, toolCalls, finishReason) = try await chatCompletionWithTools(
+            messages: messages,
+            tools: tools,
+            options: options
+        )
         
         return InferenceResponse(
             content: content,
-            toolCalls: [],
-            finishReason: .completed,
+            toolCalls: toolCalls,
+            finishReason: finishReason,
             usage: nil
         )
     }
@@ -77,44 +84,66 @@ public actor OpenAICompatibleProvider: InferenceProvider {
     
     // MARK: - Private Methods
     
-    /// Performs chat completion with exponential backoff retry for 429 errors
+    /// Performs chat completion with optional tool support
     private func chatCompletionWithRetry(
         messages: [[String: String]],
-        options: InferenceOptions
+        options: InferenceOptions,
+        tools: [ToolDefinition]?
     ) async throws -> String {
         var lastError: Error?
         
         for attempt in 0..<maxRetries {
             do {
-                return try await performChatCompletion(messages: messages, options: options)
+                let (content, _, _) = try await performChatCompletion(
+                    messages: messages,
+                    options: options,
+                    tools: tools
+                )
+                return content ?? ""
             } catch let error as AgentError {
                 lastError = error
                 
                 // Check if this is a 429 error (rate limited / overloaded)
                 if case .generationFailed(let reason) = error,
                    reason.contains("429") {
-                    // Calculate exponential backoff delay
                     let delay = baseDelay * pow(2.0, Double(attempt))
                     print("[OpenAICompatibleProvider] Rate limited (429), attempt \(attempt + 1)/\(maxRetries). Retrying in \(String(format: "%.1f", delay))s...")
                     try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                     continue
                 } else {
-                    // Not a 429 error, don't retry
                     throw error
                 }
             }
         }
         
-        // Max retries exceeded
         throw lastError ?? AgentError.generationFailed(reason: "Max retries (\(maxRetries)) exceeded")
+    }
+    
+    /// Performs chat completion and returns content + tool calls
+    private func chatCompletionWithTools(
+        messages: [[String: String]],
+        tools: [ToolDefinition],
+        options: InferenceOptions
+    ) async throws -> (content: String?, toolCalls: [InferenceResponse.ParsedToolCall], finishReason: InferenceResponse.FinishReason) {
+        let (content, parsedToolCalls, finishReason) = try await performChatCompletion(
+            messages: messages,
+            options: options,
+            tools: tools
+        )
+        
+        if ProcessInfo.processInfo.environment["NANOCLAW_DEBUG_TOOLS"] == "1" {
+            print("[OpenAICompatibleProvider] Parsed tool calls: \(parsedToolCalls.count)")
+        }
+        return (content, parsedToolCalls, finishReason)
     }
     
     /// Performs a single chat completion attempt
     private func performChatCompletion(
         messages: [[String: String]],
-        options: InferenceOptions
-    ) async throws -> String {
-        let request = try buildRequest(messages: messages, options: options)
+        options: InferenceOptions,
+        tools: [ToolDefinition]?
+    ) async throws -> (content: String?, toolCalls: [InferenceResponse.ParsedToolCall], finishReason: InferenceResponse.FinishReason) {
+        let request = try buildRequest(messages: messages, options: options, tools: tools)
         let (data, response) = try await urlSession.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -131,18 +160,61 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         // Parse JSON response
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
-              let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any],
-              let content = message["content"] as? String else {
+              let firstChoice = choices.first else {
             throw AgentError.generationFailed(reason: "Failed to parse response")
         }
         
-        return content
+        let message = firstChoice["message"] as? [String: Any] ?? [:]
+        let content = message["content"] as? String
+        let finishReasonString = firstChoice["finish_reason"] as? String ?? "stop"
+        
+        let finishReason: InferenceResponse.FinishReason = finishReasonString == "tool_calls" ? .toolCall : .completed
+        
+        // Parse tool calls if present
+        var parsedToolCalls: [InferenceResponse.ParsedToolCall] = []
+        if let toolCalls = message["tool_calls"] as? [[String: Any]] {
+            for call in toolCalls {
+                guard let id = call["id"] as? String,
+                      let function = call["function"] as? [String: Any],
+                      let name = function["name"] as? String,
+                      let argumentsString = function["arguments"] as? String else {
+                    continue
+                }
+                
+                // Parse arguments JSON
+                let arguments: [String: SendableValue]
+                if let argsData = argumentsString.data(using: .utf8),
+                   let argsDict = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] {
+                    arguments = argsDict.compactMapValues { value -> SendableValue? in
+                        if let str = value as? String { return .string(str) }
+                        if let num = value as? NSNumber {
+                            if num === true as NSNumber || num === false as NSNumber {
+                                return .bool(num.boolValue)
+                            }
+                            return .int(Int(num.int64Value))
+                        }
+                        if let arr = value as? [String] { return .array(arr.map { .string($0) }) }
+                        return nil
+                    }
+                } else {
+                    arguments = [:]
+                }
+                
+                parsedToolCalls.append(InferenceResponse.ParsedToolCall(
+                    id: id,
+                    name: name,
+                    arguments: arguments
+                ))
+            }
+        }
+        
+        return (content, parsedToolCalls, finishReason)
     }
     
     private func buildRequest(
         messages: [[String: String]],
-        options: InferenceOptions
+        options: InferenceOptions,
+        tools: [ToolDefinition]?
     ) throws -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent("/chat/completions"))
         request.httpMethod = "POST"
@@ -151,14 +223,112 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         
         // Use max_completion_tokens for GPT-5.2+ models, max_tokens for older models
         let maxTokensKey = model.hasPrefix("gpt-5") ? "max_completion_tokens" : "max_tokens"
-        let body: [String: Any] = [
+        
+        var body: [String: Any] = [
             "model": model,
             "messages": messages,
             "temperature": options.temperature,
             maxTokensKey: options.maxTokens ?? 2048
         ]
         
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        // Add tools if provided
+        if let tools = tools, !tools.isEmpty {
+            let toolsArray = tools.map { tool -> [String: Any] in
+                var parameters: [String: Any] = [:]
+                
+                // Convert ToolParameter array to JSON schema
+                var properties: [String: Any] = [:]
+                var required: [String] = []
+                
+                for param in tool.parameters {
+                    var paramSchema = schema(for: param.type)
+                    paramSchema["description"] = param.description
+                    properties[param.name] = paramSchema
+                    if param.isRequired {
+                        required.append(param.name)
+                    }
+                }
+                
+                parameters = [
+                    "type": "object",
+                    "properties": properties
+                ]
+                if !required.isEmpty {
+                    parameters["required"] = required
+                }
+                
+                return [
+                    "type": "function",
+                    "function": [
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": parameters
+                    ]
+                ]
+            }
+            
+            body["tools"] = toolsArray
+            if let forcedTool = ProcessInfo.processInfo.environment["NANOCLAW_TOOL_CHOICE"], !forcedTool.isEmpty {
+                body["tool_choice"] = [
+                    "type": "function",
+                    "function": ["name": forcedTool]
+                ]
+            } else {
+                body["tool_choice"] = "auto"
+            }
+        }
+        
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        if ProcessInfo.processInfo.environment["NANOCLAW_DEBUG_TOOLS"] == "1" {
+            if let jsonString = String(data: bodyData, encoding: .utf8) {
+                print("[OpenAICompatibleProvider] Request body: \(jsonString)")
+            }
+        }
+        request.httpBody = bodyData
         return request
+    }
+
+    private func schema(for type: ToolParameter.ParameterType) -> [String: Any] {
+        switch type {
+        case .string:
+            return ["type": "string"]
+        case .int:
+            return ["type": "integer"]
+        case .double:
+            return ["type": "number"]
+        case .bool:
+            return ["type": "boolean"]
+        case let .array(elementType):
+            return [
+                "type": "array",
+                "items": schema(for: elementType)
+            ]
+        case let .object(properties):
+            var props: [String: Any] = [:]
+            var required: [String] = []
+            for param in properties {
+                var paramSchema = schema(for: param.type)
+                paramSchema["description"] = param.description
+                props[param.name] = paramSchema
+                if param.isRequired {
+                    required.append(param.name)
+                }
+            }
+            var schema: [String: Any] = [
+                "type": "object",
+                "properties": props
+            ]
+            if !required.isEmpty {
+                schema["required"] = required
+            }
+            return schema
+        case let .oneOf(options):
+            return [
+                "type": "string",
+                "enum": options
+            ]
+        case .any:
+            return ["type": "string"]
+        }
     }
 }

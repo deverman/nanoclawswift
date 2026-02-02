@@ -175,13 +175,35 @@ Kimi API frequently returns 429 (overloaded) during peak times. Without retry lo
 
 ## Environment Variables
 
-### Required
-- `MOONSHOT_API_KEY` - Your Kimi API key (starts with sk-)
+### Required (choose at least one provider)
+- `OPENAI_API_KEY` - OpenAI API key (recommended)
+- `MOONSHOT_API_KEY` - Kimi API key (starts with sk-)
+- `ANTHROPIC_API_KEY` - Anthropic API key
 
 ### Optional
 - `MODEL_PROVIDER` - "kimi" (default), "openai", or "anthropic"
 - `MODEL_NAME` - Model to use (e.g., "kimi-k2.5")
 - `NANOCLAW_BASE_PATH` - Base path for group folders (default: "/workspace/group")
+
+## Local Testing (No WhatsApp Required)
+
+You can test the agent locally via CLI:
+
+```bash
+export MODEL_PROVIDER=openai
+export MODEL_NAME=gpt-5.2
+export OPENAI_API_KEY=...your_key...
+export NANOCLAW_BASE_PATH=/tmp/test-group
+
+mkdir -p /tmp/test-group
+
+echo '{"prompt":"What is 2+2?"}' | \
+  ./.build/debug/nanoclaw-agent --config /tmp/fake.json --group-folder /tmp/test-group --chat-jid test@g.us
+
+echo "Hello" > /tmp/test-group/hello.txt
+echo '{"prompt":"Read the file hello.txt"}' | \
+  ./.build/debug/nanoclaw-agent --config /tmp/fake.json --group-folder /tmp/test-group --chat-jid test@g.us
+```
 
 ## Testing Status
 
@@ -189,19 +211,36 @@ Kimi API frequently returns 429 (overloaded) during peak times. Without retry lo
 - Build on macOS 26 (Tahoe) with Swift 6.2.3
 - Apple Containers (tested with alpine)
 - API key loading from environment
-- Retry logic with exponential backoff
+- OpenAI API calls (GPT-5.2) successful
+- Retry logic with exponential backoff (429 handling)
 - Local path support (absolute paths)
+- CLI argument parsing (no duplicate flags)
+- Tool calling verified (ReadTool via OpenAI)
 
 **⏳ Pending:**
-- Successful API call (Kimi API currently overloaded - 429 errors)
-- Container build test
+- Container build test (Swift agent image)
 - Integration with Node.js orchestration
+- Unit test suite (still minimal)
 
 ## Known Issues
 
 1. **Kimi API Overloaded** - Getting 429 errors consistently. Retry logic implemented to handle this.
 2. **No Comprehensive Tests** - Only placeholder tests exist.
 3. **Container Not Tested** - Dockerfile created but not validated.
+
+## Release Blockers (Must Fix Before Release)
+
+1. **Container Build + Run**
+   - Build Swift container image
+   - Run end-to-end agent inside Apple container
+
+2. **Node.js Integration**
+   - Verify container runner spawns Swift agent
+   - Validate IPC files are written and consumed
+
+3. **Test Coverage**
+   - Add unit tests for ConfigLoader, tools, sessions
+   - Add integration test for tool calling
 
 ## Next Steps
 
