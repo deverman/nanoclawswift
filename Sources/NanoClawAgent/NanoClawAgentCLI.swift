@@ -34,8 +34,14 @@ struct NanoClawAgentCLI: AsyncParsableCommand {
         let prompt = try await Self.readStdin()
         print("[agent-runner] Received prompt (\(prompt.count) chars)", to: &stderr)
         
-        // Create and run agent
-        let agent = NanoClawAgent(config: config, groupFolder: groupFolder)
+        // Create and run agent - use the async init with full parameters
+        let agent = await NanoClawAgent(
+            config: config,
+            groupFolder: groupFolder,
+            chatJid: chatJid,
+            isMain: isMain,
+            isScheduledTask: isScheduledTask
+        )
         
         let result = try await agent.run(
             prompt: prompt,
