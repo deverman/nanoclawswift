@@ -149,11 +149,13 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         
+        // Use max_completion_tokens for GPT-5.2+ models, max_tokens for older models
+        let maxTokensKey = model.hasPrefix("gpt-5") ? "max_completion_tokens" : "max_tokens"
         let body: [String: Any] = [
             "model": model,
             "messages": messages,
             "temperature": options.temperature,
-            "max_tokens": options.maxTokens ?? 2048
+            maxTokensKey: options.maxTokens ?? 2048
         ]
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

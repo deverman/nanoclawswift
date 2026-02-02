@@ -24,7 +24,7 @@ public enum ModelProvider: String, Codable, CaseIterable, Sendable {
         case .kimi:
             return .kimiK2_5
         case .openai:
-            return .gpt4o
+            return .gpt52  // Latest GPT-5.2 model (released Dec 2025)
         case .anthropic:
             return .claude35Sonnet
         }
@@ -37,7 +37,12 @@ public enum ModelName: String, Codable, Sendable {
     case kimiK2 = "kimi-k2"
     case kimiK2_5 = "kimi-k2.5"
     
-    // OpenAI models
+    // OpenAI models (GPT-5.2 series released Dec 2025)
+    case gpt52 = "gpt-5.2"
+    case gpt52Instant = "gpt-5.2-instant"
+    case gpt52Thinking = "gpt-5.2-thinking"
+    case gpt52Codex = "gpt-5.2-codex"
+    // Legacy models
     case gpt4o = "gpt-4o"
     case gpt4oMini = "gpt-4o-mini"
     case gpt4Turbo = "gpt-4-turbo"

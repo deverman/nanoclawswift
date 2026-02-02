@@ -48,7 +48,7 @@ public struct ConfigLoader {
                 }
                 apiKey = key
                 defaultBaseURL = ModelProvider.kimi.defaultBaseURL
-                defaultModel = .kimiK2_5
+                defaultModel = ModelProvider.kimi.defaultModel
                 
             case .openai:
                 guard let key = envOpenAIKey ?? envMoonshotKey ?? fileConfig.api_key else {
@@ -56,7 +56,7 @@ public struct ConfigLoader {
                 }
                 apiKey = key
                 defaultBaseURL = ModelProvider.openai.defaultBaseURL
-                defaultModel = .gpt4o
+                defaultModel = ModelProvider.openai.defaultModel
                 
             case .anthropic:
                 guard let key = envAnthropicKey ?? envMoonshotKey ?? fileConfig.api_key else {
@@ -64,7 +64,7 @@ public struct ConfigLoader {
                 }
                 apiKey = key
                 defaultBaseURL = ModelProvider.anthropic.defaultBaseURL
-                defaultModel = .claude35Sonnet
+                defaultModel = ModelProvider.anthropic.defaultModel
                 
             default:
                 throw ConfigError.invalidProvider(explicitProvider)
@@ -76,25 +76,25 @@ public struct ConfigLoader {
                 apiKey = key
                 providerString = "openai"
                 defaultBaseURL = ModelProvider.openai.defaultBaseURL
-                defaultModel = .gpt4o
+                defaultModel = ModelProvider.openai.defaultModel
             } else if let key = envMoonshotKey {
                 // Moonshot/Kimi key available
                 apiKey = key
                 providerString = "kimi"
                 defaultBaseURL = ModelProvider.kimi.defaultBaseURL
-                defaultModel = .kimiK2_5
+                defaultModel = ModelProvider.kimi.defaultModel
             } else if let key = envAnthropicKey {
                 // Anthropic key available
                 apiKey = key
                 providerString = "anthropic"
                 defaultBaseURL = ModelProvider.anthropic.defaultBaseURL
-                defaultModel = .claude35Sonnet
+                defaultModel = ModelProvider.anthropic.defaultModel
             } else if let key = fileConfig.api_key {
                 // Fall back to config file key with default kimi provider
                 apiKey = key
                 providerString = "kimi"
                 defaultBaseURL = ModelProvider.kimi.defaultBaseURL
-                defaultModel = .kimiK2_5
+                defaultModel = ModelProvider.kimi.defaultModel
             } else {
                 throw ConfigError.missingRequiredKey("api_key (set MOONSHOT_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY)")
             }
