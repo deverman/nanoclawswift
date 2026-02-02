@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import Logging
 
 @main
 struct NanoClawAgentCLI: AsyncParsableCommand {
@@ -22,35 +23,41 @@ struct NanoClawAgentCLI: AsyncParsableCommand {
     var isScheduledTask = false
     
     mutating func run() async throws {
+        let logger = NanoClawLog.make("nanoclaw.cli")
         var stderr = StandardError()
         
         print("[agent-runner] Starting NanoClawSwift Agent...", to: &stderr)
-        
-        let config = try await ConfigLoader.load(from: config)
-        print("[agent-runner] Configuration loaded for provider: \(config.provider)", to: &stderr)
-        
-        let prompt = try await readStdin()
-        print("[agent-runner] Received prompt (\(prompt.count) chars)", to: &stderr)
-        
-        let agent = await NanoClawAgent(
-            config: config,
-            groupFolder: groupFolder,
-            chatJid: chatJid,
-            isMain: isMain,
-            isScheduledTask: isScheduledTask
-        )
-        
-        let result = try await agent.run(
-            prompt: prompt,
-            sessionId: sessionId,
-            chatJid: chatJid,
-            isMain: isMain,
-            isScheduledTask: isScheduledTask
-        )
-        
-        print("---NANOCLAW_OUTPUT_START---")
-        print(result.json)
-        print("---NANOCLAW_OUTPUT_END---")
+
+        do {
+            let config = try await ConfigLoader.load(from: config)
+            print("[agent-runner] Configuration loaded for provider: \(config.provider)", to: &stderr)
+            
+            let prompt = try await readStdin()
+            print("[agent-runner] Received prompt (\(prompt.count) chars)", to: &stderr)
+            
+            let agent = await NanoClawAgent(
+                config: config,
+                groupFolder: groupFolder,
+                chatJid: chatJid,
+                isMain: isMain,
+                isScheduledTask: isScheduledTask
+            )
+            
+            let result = try await agent.run(
+                prompt: prompt,
+                sessionId: sessionId,
+                chatJid: chatJid,
+                isMain: isMain,
+                isScheduledTask: isScheduledTask
+            )
+            
+            print("---NANOCLAW_OUTPUT_START---")
+            print(result.json)
+            print("---NANOCLAW_OUTPUT_END---")
+        } catch {
+            logger.error("CLI run failed", metadata: ["error": "\(error)"])
+            throw error
+        }
     }
 }
 

@@ -107,14 +107,14 @@
 - [x] Create Configuration/NanoClawConfig.swift (struct with Codable)
 - [x] Create Configuration/ConfigLoader.swift (manual JSON + env var loading)
 - [x] **FIXED:** Changed from "API_KEY" to "MOONSHOT_API_KEY" to match your env
-- [ ] Write tests for config loading
+- [x] Write tests for config loading
 
 #### Step 1.2: Async CLI
 - [x] Create NanoClawAgentCLI.swift with AsyncParsableCommand
 - [x] Implement argument parsing
 - [x] Implement stdin reading
 - [x] Add output markers (---NANOCLAW_OUTPUT_START--- / END)
-- [ ] Write tests for CLI parsing
+- [x] Write tests for CLI parsing
 
 #### Step 1.3: OpenAI-Compatible Provider ✅
 - [x] Create Providers/OpenAICompatibleProvider.swift
@@ -126,25 +126,25 @@
   - Total max wait: 31 seconds before giving up
   - Logs each retry attempt with timing
   - Only retries on HTTP 429 (rate limit/overloaded)
-- [ ] Write unit tests
+- [ ] Write unit tests (pending)
 
 ### Phase 2: File-Based Session Persistence 🔄
 - [x] Create FileBasedSession with JSON persistence
 - [x] **FIXED:** Support both container and local paths (absolute paths starting with "/")
 - [x] Secure file permissions
-- [ ] Write tests
+- [x] Write tests
 
 ### Phase 3: Tools Implementation 🔄
 - [x] FileSystem tools (Read, Write, Edit, Glob, Grep)
 - [x] BashTool
 - [x] IPC Tools
-- [ ] Write tests
+- [x] Write tests
 
 ### Phase 4: Agent Assembly 🔄
 - [x] CLAUDEMemory
 - [x] NanoClawAgent
 - [x] ArchivingHooks (with local path support)
-- [ ] Write integration tests
+- [x] Write integration tests (tool-call loop)
 
 ### Phase 5: Web Tools (Deferred) ⏳
 

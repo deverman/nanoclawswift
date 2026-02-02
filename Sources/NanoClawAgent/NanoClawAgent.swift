@@ -182,6 +182,27 @@ public actor NanoClawAgent: Agent {
         self.handoffs = []
         self.tracer = nil
     }
+
+    /// Creates a NanoClawAgent with injected dependencies (used for tests).
+    public init(
+        groupFolder: String,
+        instructions: String,
+        tools: [any Tool],
+        memory: (any Memory)?,
+        inferenceProvider: (any InferenceProvider)?,
+        configurationName: String = "NanoClaw"
+    ) async {
+        self.groupFolder = groupFolder
+        self.instructions = instructions
+        self.tools = tools
+        self.memory = memory
+        self.inferenceProvider = inferenceProvider
+        self.configuration = AgentConfiguration(name: configurationName)
+        self.inputGuardrails = []
+        self.outputGuardrails = []
+        self.handoffs = []
+        self.tracer = nil
+    }
     
     // MARK: - Agent Protocol Methods
     

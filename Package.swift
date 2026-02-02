@@ -19,6 +19,12 @@ let package = Package(
         
         // CLI argument parsing
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
+
+        // Structured logging (latest)
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.9.1"),
+
+        // Apple Containerization (target version 0.8.0+)
+        .package(url: "https://github.com/apple/containerization.git", from: "0.8.0"),
     ],
     targets: [
         .executableTarget(
@@ -26,6 +32,7 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiftAgents", package: "SwiftAgents"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
             ],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")

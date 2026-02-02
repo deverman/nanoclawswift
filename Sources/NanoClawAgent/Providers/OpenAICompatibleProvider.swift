@@ -1,5 +1,6 @@
 import SwiftAgents
 import Foundation
+import Logging
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -15,6 +16,7 @@ public actor OpenAICompatibleProvider: InferenceProvider {
     private let urlSession: URLSession
     private let maxRetries: Int
     private let baseDelay: Double
+    private let logger = NanoClawLog.make("nanoclaw.provider.openai")
     
     public init(
         apiKey: String,
@@ -110,7 +112,12 @@ public actor OpenAICompatibleProvider: InferenceProvider {
                 if case .generationFailed(let reason) = error,
                    reason.contains("429") {
                     let delay = baseDelay * pow(2.0, Double(attempt))
-                    print("[OpenAICompatibleProvider] Rate limited (429), attempt \(attempt + 1)/\(maxRetries). Retrying in \(String(format: "%.1f", delay))s...")
+                    logger.warning("Rate limited (429). Retrying.", metadata: [
+                        "attempt": "\(attempt + 1)",
+                        "maxRetries": "\(maxRetries)",
+                        "delaySeconds": "\(String(format: "%.1f", delay))",
+                        "model": "\(model)"
+                    ])
                     try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                     continue
                 } else {
@@ -147,7 +154,16 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         tools: [ToolDefinition]?
     ) async throws -> (content: String?, toolCalls: [InferenceResponse.ParsedToolCall], finishReason: InferenceResponse.FinishReason) {
         let request = try buildRequest(messages: messages, options: options, tools: tools)
-        let (data, response) = try await urlSession.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await urlSession.data(for: request)
+        } catch let urlError as URLError where urlError.code == .cannotFindHost {
+            logger.error("DNS resolution failed for API host.", metadata: [
+                "host": "\(baseURL.host ?? "unknown")",
+                "model": "\(model)"
+            ])
+            throw urlError
+        }
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AgentError.generationFailed(reason: "Invalid response")

@@ -182,18 +182,20 @@ echo '{"prompt":"Hello"}' | swift run nanoclaw-agent --group-folder test --chat-
 
 # With container
 ./container/build-swift.sh slim
-container run -i --rm nanoclawswift-agent:swift --group-folder test --chat-jid test@g.us
+
+# Or use container CLI directly:
+container build -f container/Dockerfile.slim -t nanoclawswift-agent:slim .
+
+container run -i --rm \
+  -e MODEL_PROVIDER=openai \
+  -e MODEL_NAME=gpt-5.2 \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  --mount type=bind,source=/tmp/test,target=/workspace/group \
+  nanoclawswift-agent:slim \
+  --config /tmp/fake.json \
+  --group-folder /workspace/group \
+  --chat-jid test@g.us
 ```
-
-## Migration from Original NanoClaw
-
-See MIGRATION.md for detailed migration guide from the Node.js/Claude SDK version.
-
-**Key Changes:**
-- Agent implementation moved from `container/agent-runner/` (TypeScript) to `Sources/NanoClawAgent/` (Swift)
-- Configuration format changed (see above)
-- Session storage format changed (JSON files instead of Claude SDK managed)
-- Tool names changed (see MIGRATION.md)
 
 ## Production Readiness
 
