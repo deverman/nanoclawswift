@@ -216,6 +216,8 @@ echo '{"prompt":"Read the file hello.txt"}' | \
 - Local path support (absolute paths)
 - CLI argument parsing (no duplicate flags)
 - Tool calling verified (ReadTool via OpenAI)
+- Tool calling verified (BashTool via OpenAI)
+- Local CLI test suite passes (test-local.sh)
 
 **⏳ Pending:**
 - Container build test (Swift agent image)
