@@ -24,3 +24,9 @@ agents-sdk-docs
 
 # Swift build artifacts
 .build/
+
+# SwiftPM editable dependencies
+Packages/
+
+# Container build staging
+container/bin/

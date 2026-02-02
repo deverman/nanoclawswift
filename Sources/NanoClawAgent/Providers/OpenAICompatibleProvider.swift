@@ -1,5 +1,8 @@
 import SwiftAgents
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Provider for OpenAI-compatible APIs (Kimi, OpenAI, Anthropic)
 /// Includes retry logic with exponential backoff for 429 (rate limit) errors

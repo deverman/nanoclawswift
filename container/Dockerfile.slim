@@ -3,17 +3,14 @@
 
 FROM swift:6.2.3-slim
 
-# Install required dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# NOTE: Avoid apt-get in container build to prevent DNS issues in Apple containers.
+# The swift:6.2.3-slim image already includes CA certificates.
 
 # Create working directory
 WORKDIR /app
 
 # Create non-root user with specific UID
-RUN useradd -m -u 1000 -s /bin/bash nanoclaw && \
+RUN id -u nanoclaw >/dev/null 2>&1 || useradd -m -s /bin/bash nanoclaw && \
     mkdir -p /workspace/group /workspace/ipc/messages /workspace/ipc/tasks /workspace/sessions && \
     chown -R nanoclaw:nanoclaw /workspace && \
     chmod 750 /workspace && \
@@ -23,9 +20,8 @@ RUN useradd -m -u 1000 -s /bin/bash nanoclaw && \
     chmod 750 /workspace/ipc/tasks && \
     chmod 750 /workspace/sessions
 
-# Copy the Swift binary
-# Note: Binary must be built before building container
-COPY --chown=nanoclaw:nanoclaw .build/release/nanoclaw-agent /app/nanoclaw-agent
+# Copy the Swift binary (staged into container/bin by build script)
+COPY --chown=nanoclaw:nanoclaw container/bin/nanoclaw-agent /app/nanoclaw-agent
 
 # Set environment
 ENV SWIFT_BACKTRACE=none

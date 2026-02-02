@@ -38,6 +38,9 @@
 - [x] Create container/Dockerfile.slim (swift:6.2.3-slim)
 - [x] Create container/build-swift.sh script
 - [x] Make scripts executable
+- [x] Install Swift Static Linux SDK (aarch64-swift-linux-musl)
+- [x] Build Linux release binary with SDK
+- [x] Stage Linux binary for container build
 
 ## Architecture
 
@@ -223,6 +226,7 @@ echo '{"prompt":"Read the file hello.txt"}' | \
 - Container build test (Swift agent image)
 - Integration with Node.js orchestration
 - Unit test suite (still minimal)
+ - Container network access to external APIs (blocked in Apple containers)
 
 ## Known Issues
 
@@ -243,6 +247,12 @@ echo '{"prompt":"Read the file hello.txt"}' | \
 3. **Test Coverage**
    - Add unit tests for ConfigLoader, tools, sessions
    - Add integration test for tool calling
+
+4. **Container Networking**
+   - Apple containers currently cannot resolve external hosts (DNS failure)
+   - `container run` has no outbound network even with `--dns 8.8.8.8`
+   - Must enable outbound networking or configure container system networking
+   - Without this, OpenAI/Kimi API calls fail inside container
 
 ## Next Steps
 
