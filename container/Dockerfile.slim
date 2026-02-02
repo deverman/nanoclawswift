@@ -1,0 +1,38 @@
+# NanoClawSwift Agent - Slim Container
+# Based on swift:6.2.3-slim for debugging ease
+
+FROM swift:6.2.3-slim
+
+# Install required dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create working directory
+WORKDIR /app
+
+# Create non-root user with specific UID
+RUN useradd -m -u 1000 -s /bin/bash nanoclaw && \
+    mkdir -p /workspace/group /workspace/ipc/messages /workspace/ipc/tasks /workspace/sessions && \
+    chown -R nanoclaw:nanoclaw /workspace && \
+    chmod 750 /workspace && \
+    chmod 750 /workspace/group && \
+    chmod 750 /workspace/ipc && \
+    chmod 750 /workspace/ipc/messages && \
+    chmod 750 /workspace/ipc/tasks && \
+    chmod 750 /workspace/sessions
+
+# Copy the Swift binary
+# Note: Binary must be built before building container
+COPY --chown=nanoclaw:nanoclaw .build/release/nanoclaw-agent /app/nanoclaw-agent
+
+# Set environment
+ENV SWIFT_BACKTRACE=none
+ENV ASSISTANT_NAME=Andy
+
+# Switch to non-root user
+USER nanoclaw
+
+# Entry point
+ENTRYPOINT ["/app/nanoclaw-agent"]

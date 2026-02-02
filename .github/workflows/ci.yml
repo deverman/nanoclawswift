@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, swift-agent ]
+  pull_request:
+    branches: [ main, swift-agent ]
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v1
+      with:
+        swift-version: '6.2.3'
+        
+    - name: Cache Swift packages
+      uses: actions/cache@v3
+      with:
+        path: .build
+        key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+        restore-keys: |
+          ${{ runner.os }}-spm-
+          
+    - name: Resolve dependencies
+      run: swift package resolve
+      
+    - name: Build
+      run: swift build --build-tests
+      
+    - name: Run tests
+      run: swift test --parallel
+      
+    - name: Build release binary
+      run: swift build -c release
+      
+    - name: Archive build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: nanoclaw-agent
+        path: .build/release/nanoclaw-agent
+        
+  container-build:
+    runs-on: macos-latest
+    needs: build-and-test
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Build container (slim)
+      run: |
+        cd container
+        ./build-swift.sh slim
+        
+    - name: Test container basic operation
+      run: |
+        container system start || true
+        container run --rm nanoclawswift-agent:slim echo "Container test successful"
