@@ -1,6 +1,15 @@
 # NanoClawSwift Agent - Slim Container
 # Based on swift:6.2.3-slim for debugging ease
 
+FROM swift:6.2.3 AS builder
+
+WORKDIR /build
+
+COPY Package.swift Package.resolved ./
+COPY Sources ./Sources
+
+RUN swift build -c release
+
 FROM swift:6.2.3-slim
 
 # NOTE: Avoid apt-get in container build to prevent DNS issues in Apple containers.
@@ -20,8 +29,8 @@ RUN id -u nanoclaw >/dev/null 2>&1 || useradd -m -s /bin/bash nanoclaw && \
     chmod 750 /workspace/ipc/tasks && \
     chmod 750 /workspace/sessions
 
-# Copy the Swift binary (staged into container/bin by build script)
-COPY --chown=nanoclaw:nanoclaw container/bin/nanoclaw-agent /app/nanoclaw-agent
+# Copy the Swift binary from build stage
+COPY --from=builder --chown=nanoclaw:nanoclaw /build/.build/release/nanoclaw-agent /app/nanoclaw-agent
 
 # Set environment
 ENV SWIFT_BACKTRACE=none

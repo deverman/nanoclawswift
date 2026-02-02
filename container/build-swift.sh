@@ -14,27 +14,7 @@ TAG="${IMAGE_NAME}:${VERSION}"
 echo "Building NanoClawSwift agent container image..."
 echo "Image: ${TAG}"
 
-# Stage binary into container/bin for build context
-LINUX_BIN_SOURCE="${REPO_ROOT}/.build/aarch64-swift-linux-musl/release/nanoclaw-agent"
-DARWIN_BIN_SOURCE="${REPO_ROOT}/.build/release/nanoclaw-agent"
-BIN_SOURCE="${LINUX_BIN_SOURCE}"
-
-if [ ! -f "$BIN_SOURCE" ]; then
-    BIN_SOURCE="${DARWIN_BIN_SOURCE}"
-fi
-BIN_TARGET="${REPO_ROOT}/container/bin/nanoclaw-agent"
-
-if [ ! -f "$BIN_SOURCE" ]; then
-    echo "❌ Release binary not found."
-    echo "   Expected Linux: ${LINUX_BIN_SOURCE}"
-    echo "   Expected macOS: ${DARWIN_BIN_SOURCE}"
-    echo "   Run: swift build --swift-sdk aarch64-swift-linux-musl -c release"
-    exit 1
-fi
-
-mkdir -p "${REPO_ROOT}/container/bin"
-cp -f "$BIN_SOURCE" "$BIN_TARGET"
-chmod +x "$BIN_TARGET"
+# Note: Dockerfile.slim now builds the Linux binary inside the container
 
 if [ "$VERSION" = "slim" ]; then
     echo "Building slim version (swift:6.2.3-slim base)..."
