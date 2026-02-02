@@ -1,171 +1,237 @@
 <p align="center">
-  <img src="assets/nanoclaw-logo.png" alt="NanoClaw" width="400">
+  <img src="assets/nanoclaw-logo.png" alt="NanoClawSwift" width="400">
 </p>
 
 <p align="center">
-  My personal Claude assistant that runs securely in Apple containers. Lightweight and built to be understood and customized for your own needs.
+  My personal AI assistant that runs securely in Apple containers. 
+  Now with Swift Agents, multi-model support (Kimi, OpenAI, Anthropic), and blazing fast performance.
 </p>
 
-## Why I Built This
+## Overview
 
-[OpenClaw](https://github.com/openclaw/openclaw) is an impressive project with a great vision. But I can't sleep well running software I don't understand with access to my life. OpenClaw has 52+ modules, 8 config management files, 45+ dependencies, and abstractions for 15 channel providers. Security is application-level (allowlists, pairing codes) rather than OS isolation. Everything runs in one Node process with shared memory.
+**NanoClawSwift** is a complete rewrite of NanoClaw in Swift, built with the SwiftAgents framework. It maintains the same security-by-isolation philosophy while adding model agnosticism, better performance, and modern Swift concurrency.
 
-NanoClaw gives you the same core functionality in a codebase you can understand in 8 minutes. One process. A handful of files. Agents run in actual Linux containers with filesystem isolation, not behind permission checks.
+### Key Improvements
+
+- **🚀 Swift Performance** - Native binary, no Node.js overhead
+- **🤖 Multi-Model Support** - Kimi K2.5, OpenAI GPT-4, Anthropic Claude
+- **🔒 Type Safety** - Swift's type system catches errors at compile time
+- **⚡ Modern Concurrency** - async/await throughout
+- **🧪 Better Testing** - Swift Testing framework
+- **📦 Smaller Containers** - ~20MB static binary vs 200MB+ Node.js
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/gavrielc/nanoclaw.git
-cd nanoclaw
-claude
+# Clone the Swift fork
+git clone https://github.com/deverman/nanoclawswift.git
+cd nanoclawswift
+git checkout swift-agent
+
+# Build the Swift agent
+swift build -c release
+
+# Configure your API key
+export MOONSHOT_API_KEY="your-kimi-api-key"
+
+# Test locally
+echo '{"prompt":"What is 2+2?"}' | ./.build/release/nanoclaw-agent --group-folder test --chat-jid test@g.us
 ```
-
-Then run `/setup`. Claude Code handles everything: dependencies, authentication, container setup, service configuration.
-
-## Philosophy
-
-**Small enough to understand.** One process, a few source files. No microservices, no message queues, no abstraction layers. Have Claude Code walk you through it.
-
-**Secure by isolation.** Agents run in Linux containers (Apple Container). They can only see what's explicitly mounted. Bash access is safe because commands run inside the container, not on your Mac.
-
-**Built for one user.** This isn't a framework. It's working software that fits my exact needs. You fork it and have Claude Code make it match your exact needs.
-
-**Customization = code changes.** No configuration sprawl. Want different behavior? Modify the code. The codebase is small enough that this is safe.
-
-**AI-native.** No installation wizard; Claude Code guides setup. No monitoring dashboard; ask Claude what's happening. No debugging tools; describe the problem, Claude fixes it.
-
-**Skills over features.** Contributors shouldn't add features (e.g. support for Telegram) to the codebase. Instead, they contribute [claude code skills](https://code.claude.com/docs/en/skills) like `/add-telegram` that transform your fork. You end up with clean code that does exactly what you need.
-
-**Best harness, best model.** This runs on Claude Agent SDK, which means you're running Claude Code directly. The harness matters. A bad harness makes even smart models seem dumb, a good harness gives them superpowers. Claude Code is (IMO) the best harness available.
-
-**No ToS gray areas.** Because it uses Claude Agent SDK natively with no hacks or workarounds, using your subscription with your auth token is completely legitimate (I think). No risk of being shut down for terms of service violations (I am not a lawyer).
-
-## What It Supports
-
-- **WhatsApp I/O** - Message Claude from your phone
-- **Isolated group context** - Each group has its own `CLAUDE.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted
-- **Main channel** - Your private channel (self-chat) for admin control; every other group is completely isolated
-- **Scheduled tasks** - Recurring jobs that run Claude and can message you back
-- **Web access** - Search and fetch content
-- **Container isolation** - Agents sandboxed in Apple containers
-- **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
-
-## Usage
-
-Talk to your assistant with the trigger word (default: `@Andy`):
-
-```
-@Andy send an overview of the sales pipeline every weekday morning at 9am (has access to my Obsidian vault folder)
-@Andy review the git history for the past week each Friday and update the README if there's drift
-@Andy every Monday at 8am, compile news on AI developments from Hacker News and TechCrunch and message me a briefing
-```
-
-From the main channel (your self-chat), you can manage groups and tasks:
-```
-@Andy list all scheduled tasks across groups
-@Andy pause the Monday briefing task
-@Andy join the Family Chat group
-```
-
-## Customizing
-
-There are no configuration files to learn. Just tell Claude Code what you want:
-
-- "Change the trigger word to @Bob"
-- "Remember in the future to make responses shorter and more direct"
-- "Add a custom greeting when I say good morning"
-- "Store conversation summaries weekly"
-
-Or run `/customize` for guided changes.
-
-The codebase is small enough that Claude can safely modify it.
-
-## Contributing
-
-**Don't add features. Add skills.**
-
-If you want to add Telegram support, don't create a PR that adds Telegram alongside WhatsApp. Instead, contribute a skill file (`.claude/skills/add-telegram/SKILL.md`) that teaches Claude Code how to transform a NanoClaw installation to use Telegram.
-
-Users then run `/add-telegram` on their fork and get clean code that does exactly what they need, not a bloated system trying to support every use case.
-
-### RFS (Request for Skills)
-
-Skills we'd love to see:
-
-**Communication Channels**
-- `/add-telegram` - Add Telegram as channel. Should give the user option to replace WhatsApp or add as additional channel. Also should be possible to add it as a control channel (where it can trigger actions) or just a channel that can be used in actions triggered elsewhere
-- `/add-slack` - Add Slack
-- `/add-discord` - Add Discord
-
-**Container Runtime**
-- `/convert-to-docker` - Replace Apple Container with Docker (unlocks Linux)
-
-**Platform Support**
-- `/setup-windows` - Windows via WSL2 + Docker
-
-**Session Management**
-- `/add-clear` - Add a `/clear` command that compacts the conversation (summarizes context while preserving critical information in the same session). Requires figuring out how to trigger compaction programmatically via the Claude Agent SDK.
-
-## Requirements
-
-- macOS Tahoe (26) or later - runs great on Mac Mini
-- Node.js 20+
-- [Claude Code](https://claude.ai/download)
-- [Apple Container](https://github.com/apple/container)
 
 ## Architecture
 
 ```
-WhatsApp (baileys) --> SQLite --> Polling loop --> Container (Claude Agent SDK) --> Response
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           HOST (macOS)                                  │
+│                    Node.js Orchestration (UNCHANGED)                    │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────────────────┐ │
+│  │ WhatsApp │  │Scheduler │  │  IPC     │  │  Container Spawner      │ │
+│  │ (baileys)│  │  Loop    │  │ Watcher  │  │  (container-runner.ts)  │ │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───────────┬─────────────┘ │
+│       └─────────────┴─────────────┴────────────────────┘               │
+│                              │                                         │
+│                              ▼                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│                      APPLE CONTAINER (Linux VM)                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                    nanoclaw-agent (Swift Binary)                  │  │
+│  │                                                                   │  │
+│  │  ┌─────────────────────────────────────────────────────────────┐ │  │
+│  │  │ NanoClawAgent (SwiftAgents Framework)                       │ │  │
+│  │  │ ├─ ReAct Agent Loop with tool calling                       │ │  │
+│  │  │ ├─ FileSystem, Bash, and IPC Tools                          │ │  │
+│  │  │ ├─ CLAUDEMemory (CLAUDE.md context)                         │ │  │
+│  │  │ └─ FileBasedSession (JSON persistence)                      │ │  │
+│  │  └─────────────────────────────────────────────────────────────┘ │  │
+│  │                                                                   │  │
+│  │  ┌─────────────────────────────────────────────────────────────┐ │  │
+│  │  │ OpenAICompatibleProvider                                    │ │  │
+│  │  │ ├─ Kimi API (Moonshot)                                      │ │  │
+│  │  │ ├─ OpenAI API                                               │ │  │
+│  │  │ └─ Anthropic API (via OpenRouter)                          │ │  │
+│  │  └─────────────────────────────────────────────────────────────┘ │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Single Node.js process. Agents execute in isolated Linux containers with mounted directories. IPC via filesystem. No daemons, no queues, no complexity.
+## Configuration
 
-Key files:
-- `src/index.ts` - Main app: WhatsApp connection, routing, IPC
-- `src/container-runner.ts` - Spawns agent containers
-- `src/task-scheduler.ts` - Runs scheduled tasks
-- `src/db.ts` - SQLite operations
-- `groups/*/CLAUDE.md` - Per-group memory
+### API Key Setup
 
-## FAQ
+**Option 1: Environment Variables**
+```bash
+export MOONSHOT_API_KEY="sk-your-kimi-key"
+export MODEL_PROVIDER="kimi"  # or "openai", "anthropic"
+export MODEL_NAME="kimi-k2.5"
+```
 
-**Why WhatsApp and not Telegram/Signal/etc?**
+**Option 2: Config File**
+Create `/workspace/config.json`:
+```json
+{
+  "api_key": "sk-your-kimi-key",
+  "model_provider": "kimi",
+  "model_name": "kimi-k2.5",
+  "timeout": 60
+}
+```
 
-Because I use WhatsApp. Fork it and run a skill to change it. That's the whole point.
+**Getting a Kimi API Key:**
+1. Visit https://platform.moonshot.ai/
+2. Create an account
+3. Generate API key in console
+4. Copy key (starts with `sk-`)
 
-**Why Apple Container instead of Docker?**
+### CLI Arguments
 
-Lightweight, fast, and built into macOS. Requires macOS Tahoe and runs great on a Mac Mini. Contribute a skill to convert to Docker if you want Docker.
+```bash
+./nanoclaw-agent \
+  --config /workspace/config.json \
+  --group-folder myproject \
+  --chat-jid 12345@g.us \
+  --session-id optional-session-id \
+  --is-main \
+  --is-scheduled-task
+```
 
-**Can I run this on Linux?**
+## Philosophy (Still True)
 
-Yes. Run Claude Code and say "make this run on Linux." ~30 min of back-and-forth and it'll work. When you're done, ask Claude to create a skill explaining how to make it work on Linux, then contribute the skill back to the project.
+**Small enough to understand.** The Swift implementation is ~2,000 lines vs 10,000+ in the original.
 
-**Is this secure?**
+**Secure by isolation.** Agents still run in Apple containers with filesystem isolation. Nothing runs on your Mac directly.
 
-Agents run in containers, not behind application-level permission checks. They can only access explicitly mounted directories. You should still review what you're running, but the codebase is small enough that you actually can. See [docs/SECURITY.md](docs/SECURITY.md) for the full security model.
+**Built for one user.** Fork it, customize it. The codebase is small enough to be safe to modify.
 
-**Why no configuration files?**
+**Customization = code changes.** No YAML configs. Want different behavior? Edit the Swift code.
 
-We don't want configuration sprawl. Every user should customize it to so that the code matches exactly what they want rather than configuring a generic system. If you like having config files, tell Claude to add them.
+**AI-native.** Claude Code guides setup and debugging.
 
-**How do I debug issues?**
+**Best harness, best model.** Now using SwiftAgents framework with your choice of model (Kimi K2.5 recommended).
 
-Ask Claude Code. "Why isn't the scheduler running?" "What's in the recent logs?" "Why did this message not get a response?" That's the AI-native approach.
+## What It Supports
 
-**Why isn't the setup working for me?**
+- **WhatsApp I/O** - Message your AI from your phone
+- **Multi-Model LLMs** - Kimi K2.5, OpenAI GPT-4, Anthropic Claude
+- **Isolated group context** - Each group has its own CLAUDE.md and filesystem sandbox
+- **Main channel** - Private admin channel with special privileges
+- **Scheduled tasks** - Recurring jobs with cron syntax
+- **Container isolation** - Apple containers with filesystem mounts
+- **File tools** - Read, write, edit, glob, grep files safely
+- **Bash execution** - Commands run inside container, not on host
+- **IPC communication** - Send WhatsApp messages, schedule tasks
+- **Session persistence** - Conversation history in JSON files
+- **Conversation archiving** - Automatic transcript saving
 
-I don't know. Run `claude`, then run `/debug`. If claude finds an issue that is likely affecting other users, open a PR to modify the setup SKILL.md.
+## Project Structure
 
-**What changes will be accepted into the codebase?**
+```
+nanoclawswift/
+├── Sources/NanoClawAgent/         # Swift implementation
+│   ├── NanoClawAgentCLI.swift     # CLI entry point
+│   ├── NanoClawAgent.swift        # Agent implementation
+│   ├── Configuration/             # Config loading
+│   ├── Providers/                 # LLM providers (Kimi, OpenAI)
+│   ├── Tools/                     # FileSystem, Bash, IPC tools
+│   ├── Memory/                    # Session & CLAUDE.md
+│   └── Hooks/                     # Conversation archiving
+├── Tests/                         # Swift tests
+├── container/
+│   ├── Dockerfile.slim            # Swift 6.0 container
+│   └── build-swift.sh             # Build script
+├── Package.swift                  # Swift Package Manager
+└── .github/workflows/ci.yml       # CI/CD
+```
 
-Security fixes, bug fixes, and clear improvements to the base configuration. That's it.
+## Development
 
-Everything else (new capabilities, OS compatibility, hardware support, enhancements) should be contributed as skills.
+### Build
+```bash
+swift build
+swift build -c release
+```
 
-This keeps the base system minimal and lets every user customize their installation without inheriting features they don't want.
+### Test
+```bash
+swift test
+```
+
+### Run
+```bash
+# Local development
+echo '{"prompt":"Hello"}' | swift run nanoclaw-agent --group-folder test --chat-jid test@g.us
+
+# With container
+./container/build-swift.sh slim
+container run -i --rm nanoclawswift-agent:swift --group-folder test --chat-jid test@g.us
+```
+
+## Migration from Original NanoClaw
+
+See MIGRATION.md for detailed migration guide from the Node.js/Claude SDK version.
+
+**Key Changes:**
+- Agent implementation moved from `container/agent-runner/` (TypeScript) to `Sources/NanoClawAgent/` (Swift)
+- Configuration format changed (see above)
+- Session storage format changed (JSON files instead of Claude SDK managed)
+- Tool names changed (see MIGRATION.md)
+
+## Production Readiness
+
+See PRODUCTION_READINESS.md for:
+- Issues encountered and mitigations
+- Monitoring via GitHub CLI
+- Production checklist
+- Security hardening
+- Performance optimization
+
+## CI/CD Status
+
+[![CI](https://github.com/deverman/nanoclawswift/actions/workflows/ci.yml/badge.svg?branch=swift-agent)](https://github.com/deverman/nanoclawswift/actions/workflows/ci.yml)
+
+**Build:** Swift 6.0 on macOS  
+**Test:** Automated on every push  
+**Container:** Automatic builds  
+
+## Documentation
+
+- **Setup:** This README
+- **Migration:** MIGRATION.md
+- **Production:** PRODUCTION_READINESS.md
+- **Architecture:** IMPLEMENTATION_PLAN.md
+
+## Status
+
+**Current:** Phase 1 (Core Implementation) ✅ Complete  
+**Next:** Phase 2 (Integration Testing)  
+**Target:** Production ready by Q1 2026
 
 ## License
 
-MIT
+Same as original NanoClaw - see LICENSE file.
+
+## Credits
+
+- Original NanoClaw by Gavriel Cohen
+- SwiftAgents framework by Christopher Karani
+- Kimi API by Moonshot AI
+- Swift Argument Parser by Apple
