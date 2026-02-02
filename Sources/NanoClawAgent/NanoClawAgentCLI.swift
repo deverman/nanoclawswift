@@ -6,19 +6,19 @@ struct NanoClawAgentCLI: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "Path to config JSON file")
     var config: String = "/workspace/config.json"
     
-    @Option(name: .shortAndLong, help: "Group folder name")
+    @Option(name: [.customShort("g"), .long], help: "Group folder name")
     var groupFolder: String
     
-    @Option(name: .shortAndLong, help: "Session ID for continuity")
+    @Option(name: [.customShort("s"), .long], help: "Session ID for continuity")
     var sessionId: String?
     
-    @Option(name: .shortAndLong, help: "Chat JID")
+    @Option(name: [.customShort("j"), .long], help: "Chat JID")
     var chatJid: String
     
-    @Flag(name: .shortAndLong, help: "Is this the main channel")
+    @Flag(name: [.customShort("m"), .long], help: "Is this the main channel")
     var isMain = false
     
-    @Flag(name: .shortAndLong, help: "Is this a scheduled task")
+    @Flag(name: [.customShort("t"), .long], help: "Is this a scheduled task")
     var isScheduledTask = false
     
     mutating func run() async throws {

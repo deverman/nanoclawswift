@@ -62,7 +62,9 @@ public actor FileBasedSession: Session {
     /// The session file is stored at `/workspace/group/{groupFolder}/.nanoclaw/session.json`
     public init(groupFolder: String, sessionId: String = "default") {
         self.sessionId = sessionId
-        let groupPath = "/workspace/group/\(groupFolder)"
+        // Support both container paths (/workspace/group) and local absolute paths
+        let basePath = ProcessInfo.processInfo.environment["NANOCLAW_BASE_PATH"] ?? "/workspace/group"
+        let groupPath = groupFolder.hasPrefix("/") ? groupFolder : "\(basePath)/\(groupFolder)"
         self.sessionFilePath = "\(groupPath)/.nanoclaw/session.json"
         
         // Ensure directory exists

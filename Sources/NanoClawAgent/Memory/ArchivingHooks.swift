@@ -63,7 +63,10 @@ public actor ArchivingHooks: RunHooks {
         includeFullContent: Bool = true
     ) {
         self.groupFolder = groupFolder
-        self.archiveDirectory = "/workspace/group/\(groupFolder)/.nanoclaw/archive"
+        // Support both container paths and local absolute paths
+        let basePath = ProcessInfo.processInfo.environment["NANOCLAW_BASE_PATH"] ?? "/workspace/group"
+        let groupPath = groupFolder.hasPrefix("/") ? groupFolder : "\(basePath)/\(groupFolder)"
+        self.archiveDirectory = "\(groupPath)/.nanoclaw/archive"
         self.maxArchives = maxArchives
         self.includeFullContent = includeFullContent
         
