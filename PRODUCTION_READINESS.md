@@ -6,15 +6,16 @@
 **Issue:** GitHub Actions `swift-actions/setup-swift` doesn't support Swift 6.2.3  
 **Impact:** CI/CD pipeline failure  
 **Mitigation:** 
-- Downgraded to Swift 6.0 (widely supported)
-- Updated Package.swift to use Swift 5.10+ tools version
+- Use native Swift toolchain on `macos-26` runner instead of forcing setup action installs
+- Keep `swift-tools-version:5.10` for broader local compatibility
 - **Prevention:** Always check available versions on https://swift.org/download/ before specifying in CI
 
-### 2. SwiftAgents API Documentation Gaps
+### 2. SwiftAgents / Swarm API Documentation Gaps
 **Issue:** Limited documentation on exact type names (ToolSchema vs ToolDefinition, etc.)  
 **Impact:** Build failures due to type name mismatches  
 **Mitigation:**
 - Had to explore SwiftAgents source code directly to find correct types
+- Repository source aligned to renamed upstream (`Swarm.git`) while keeping pinned `0.3.1` API surface (phased migration)
 - **Prevention:** Clone and examine dependencies locally before coding; check for breaking changes between versions
 
 ### 3. Swift ArgumentParser @main Attribute
@@ -52,6 +53,47 @@
 **Mitigation:**
 - Made container-build job depend on build-and-test job
 - **Prevention:** Always specify job dependencies in CI workflows
+
+### 8. Container Image Metadata Drift (Local Host)
+**Issue:** `container image ls` can fail if local state references missing content digests  
+**Impact:** Image management commands fail despite runtime still working  
+**Mitigation:**
+- Identify stale digest references in `/Users/deverman/Library/Application Support/com.apple.container/state.json`
+- Re-pull stale image tags or clean stale metadata references with a backup
+- Verified on 2026-02-06 that after cleanup + service restart, `container image ls` and `container run` both recover normally
+- **Prevention:** Keep base images current and avoid interrupted large pulls for multi-GB images
+
+### 9. Tailscale Exit-Node / `utun` Default Route vs Container Egress
+**Issue:** With host default route on `utun*` (common with Tailscale exit-node), container VM outbound internet can fail while host internet remains healthy  
+**Impact:** LLM provider calls from inside container fail (DNS errors/timeouts), breaking Telegram/WhatsApp agent responses  
+**Mitigation:**
+- Runtime now detects default route interface and enables host relay automatically in `CONTAINER_LLM_RELAY_MODE=auto` when route is `utun*`
+- Relay rewrites container `BASE_URL` to `http://192.168.64.1:18081/relay/{provider}/v1`
+- Relay DNS uses explicit resolvers (`CONTAINER_LLM_RELAY_DNS_SERVERS`, default `1.1.1.1,8.8.8.8`)
+- Host-level option: if using Tailscale exit node, enable "Allow LAN access" or disable exit node during direct container egress tests
+- **Prevention:** Treat `route -n get default` + container egress probe as part of incident triage before blaming provider/API keys
+
+### 10. Missing First-Class Web Tools in Swift Runtime
+**Issue:** Swift runtime initially lacked `WebFetch`/`WebSearch` despite architecture docs expecting them  
+**Impact:** Agent fell back to shell tooling (`curl`) which was not always available/reliable in runtime images  
+**Mitigation:**
+- Added host web broker endpoints (`/web/fetch`, `/web/search`, `/web/policy/list`) on the relay server path
+- Added Swift tools: `web_fetch`, `web_search`, `web_policy_add_domain`, `web_policy_remove_domain`, `web_policy_list`
+- Added two-layer policy model:
+  - global baseline `~/.config/nanoclaw/web-policy.global.json` (host-managed)
+  - group overlay `groups/{group}/.nanoclaw/web-policy.overlay.json` (container-writable)
+- **Prevention:** Keep docs and runtime tool registry aligned as part of release checklist
+
+### 11. Network-Constrained Builder Pull Blocks Final Runtime Image Refresh
+**Issue:** Final runtime image validation requires rebuilding `nanoclawswift-agent:slim`, but the builder base image `docker.io/library/swift:6.2.3` is ~2.2GB and may be unavailable/too slow on constrained links.  
+**Impact:** Source changes are ready and tested locally, but container E2E can still run older agent binary until image rebuild completes.  
+**Mitigation:**
+- Keep non-image validation moving: `npm run typecheck`, `npm run build`, `swift test`, `npm run container:smoke`, `npm run container:netcheck`.
+- Rebuild immediately when network stabilizes:
+  - `container image pull docker.io/library/swift:6.2.3`
+  - `container build -f container/Dockerfile.slim -t nanoclawswift-agent:slim .`
+- Verify freshness via `container image inspect nanoclawswift-agent:slim` and rerun Telegram E2E.
+- **Prevention:** Maintain a pre-pulled local cache of large builder images before travel/limited-connectivity windows.
 
 ---
 
@@ -138,6 +180,18 @@ cd container
 container run --rm nanoclawswift-agent:slim echo "Container works"
 ```
 
+### 2b. Container Runtime Smoke
+```bash
+cd /Users/deverman/Documents/Code/nanoclawswift
+npm run container:smoke
+```
+
+### 2c. Container Network Diagnostics (VPN/Tailscale Hosts)
+```bash
+cd /Users/deverman/Documents/Code/nanoclawswift
+npm run container:netcheck
+```
+
 ### 3. Full Integration Test
 ```bash
 # Start the Node.js orchestration
@@ -152,9 +206,9 @@ npm run dev
 ## Production Readiness Checklist
 
 ### Code Quality
-- [x] Swift 6.0 compatible
+- [x] Swift 6.2.3 runtime validated on macOS 26 CI host
 - [x] All compiler warnings resolved
-- [x] Unit tests passing (placeholder test)
+- [x] Swift test suite passing (11 tests: CLI, config, tools, session, tool-call integration, web policy tool coverage)
 - [ ] Comprehensive test suite (>80% coverage)
 - [ ] Integration tests with mock LLM
 - [ ] Error handling audit (all throws documented)
@@ -171,7 +225,8 @@ npm run dev
 
 ### Performance
 - [x] Async/await for I/O operations
-- [ ] Connection pooling for HTTP client
+- [x] Relay-side connection reuse via keep-alive agents in `src/container-runner.ts`
+- [ ] Provider-side connection pooling/circuit breaking policy hardening
 - [ ] Response caching for repeated prompts
 - [ ] Timeout handling (60s default)
 - [ ] Circuit breaker for LLM failures
@@ -187,7 +242,7 @@ npm run dev
 ### Reliability
 - [x] Session persistence (JSON files)
 - [x] Conversation archiving
-- [ ] Retry logic with exponential backoff
+- [x] Retry logic with exponential backoff (429 handling)
 - [ ] Graceful degradation (fallback models)
 - [ ] Data backup strategy
 - [ ] Disaster recovery plan
@@ -201,11 +256,14 @@ npm run dev
 
 ### CI/CD
 - [x] GitHub Actions workflow
-- [x] Swift 6.0 build
-- [ ] Automated testing on PR
+- [x] Swift build + test on PR
+- [x] Automated testing on PR
+- [x] Local container smoke gate (`npm run container:smoke`)
+- [x] CI container runtime smoke gate (`.github/workflows/ci.yml` -> `scripts/container-smoke.sh`)
 - [ ] Container image publishing
 - [ ] Automated security scanning
 - [ ] Performance benchmarking
+- [ ] Confirm runtime image is rebuilt from current source commit and validated in Telegram E2E
 
 ---
 
@@ -220,7 +278,8 @@ npm run dev
 2. **Error Handling**
    - Audit all error cases
    - Add user-friendly error messages
-   - Implement retry logic
+   - Expand retry policy coverage beyond HTTP 429 and add retry telemetry
+   - Add guarded preflight remediation playbook for local container metadata drift
 
 3. **Observability**
    - Replace print statements with structured logging
@@ -250,8 +309,8 @@ npm run dev
 
 ### Low Priority
 8. **Features**
-   - Web search tool
-   - Web fetch tool
+   - Expand search provider support beyond DuckDuckGo API
+   - Rich HTML extraction and readability transforms for web fetch
    - Image generation support
    - Multi-modal inputs
 
@@ -259,15 +318,17 @@ npm run dev
 
 ## Migration from Old NanoClaw
 
-See MIGRATION.md for detailed migration guide from Node.js/Claude SDK to Swift/SwiftAgents.
+See migration notes in this repository for detailed migration guidance from Node.js/Claude SDK to Swift/SwiftAgents (Swarm source).
 
 ## Next Steps
 
-1. ✅ Fix CI/CD (Swift 6.0) - DONE
-2. Add comprehensive test suite
-3. Set up API key in GitHub Secrets
-4. Run integration tests
-5. Create monitoring/alerting
-6. Performance testing
-7. Security audit
-8. Documentation updates
+1. Complete blocked builder pull: `container image pull docker.io/library/swift:6.2.3`
+2. Rebuild runtime image: `container build -f container/Dockerfile.slim -t nanoclawswift-agent:slim .`
+3. Run Telegram E2E with rebuilt image (`WHATSAPP_ENABLED=0 npm run dev`)
+4. Add comprehensive test suite
+5. Set up API key in GitHub Secrets
+6. Run integration tests
+7. Create monitoring/alerting
+8. Performance testing
+9. Security audit
+10. Documentation updates

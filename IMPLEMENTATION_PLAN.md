@@ -3,7 +3,7 @@
 **Repository**: https://github.com/deverman/nanoclawswift  
 **Base**: https://github.com/gavrielc/nanoclaw  
 **Branch**: swift-agent  
-**Status**: Build Mode - Phase 0-1 Complete, Retry Logic Implemented
+**Status**: Validation Mode - Core runtime stable on container 0.9.0, test suites green, Tailscale-aware relay + web broker implemented, group-scoped web policy overlays active. Final deploy validation is currently blocked by network-constrained image pull (`swift:6.2.3` builder base).
 
 ## Current Progress
 
@@ -17,7 +17,7 @@
 
 #### ✅ Step 0.2: Swift Package Structure
 - [x] Create Package.swift with dependencies:
-  - SwiftAgents 0.3.1 (EXACT VERSION - PINNED)
+  - SwiftAgents 0.3.1 (EXACT VERSION - PINNED, sourced from `Swarm.git`)
   - swift-argument-parser 1.5.0+
   - swift-configuration 1.0.2+
 - [x] Create Sources/NanoClawAgent/ directory structure
@@ -65,7 +65,7 @@
 │  │  │ NanoClawAgent (Agent Protocol)                              │ │  │
 │  │  │ ├─ Instructions: "You are Andy..."                           │ │  │
 │  │  │ ├─ Loop: Guard(.input) → Relay() → Guard(.output)           │ │  │
-│  │  │ ├─ Tools: [Read, Write, Edit, Bash, Glob, Grep, IPC*]       │ │  │
+│  │  │ ├─ Tools: [Read, Write, Edit, Bash, Glob, Grep, Web*, IPC*] │ │  │
 │  │  │ ├─ Memory: CLAUDEMemory (global + group CLAUDE.md)          │ │  │
 │  │  │ └─ Session: FileBasedSession (JSON persistence)             │ │  │
 │  │  └─────────────────────────────────────────────────────────────┘ │  │
@@ -128,11 +128,12 @@
   - Only retries on HTTP 429 (rate limit/overloaded)
 - [ ] Write unit tests (pending)
 
-### Phase 2: File-Based Session Persistence 🔄
+### Phase 2: File-Based Session Persistence ✅ COMPLETE
 - [x] Create FileBasedSession with JSON persistence
 - [x] **FIXED:** Support both container and local paths (absolute paths starting with "/")
 - [x] Secure file permissions
 - [x] Write tests
+- [x] Verified working in Apple Containers
 
 ### Phase 3: Tools Implementation 🔄
 - [x] FileSystem tools (Read, Write, Edit, Glob, Grep)
@@ -146,7 +147,13 @@
 - [x] ArchivingHooks (with local path support)
 - [x] Write integration tests (tool-call loop)
 
-### Phase 5: Web Tools (Deferred) ⏳
+### Phase 5: Web Tools ✅ COMPLETE
+- [x] Host web broker (`/web/fetch`, `/web/search`, `/web/policy/list`) with allow/deny enforcement
+- [x] Global + group overlay web policy model
+- [x] Swift tools: `web_fetch`, `web_search`, `web_policy_add_domain`, `web_policy_remove_domain`, `web_policy_list`
+- [x] Group overlay persistence in `groups/{group}/.nanoclaw/web-policy.overlay.json`
+- [x] Test coverage for web policy overlay tools
+- [ ] Rebuild `nanoclawswift-agent:slim` from current sources and verify tool availability in-container (pending network recovery for `swift:6.2.3` pull)
 
 ## Retry Logic Implementation
 
@@ -187,6 +194,10 @@ Kimi API frequently returns 429 (overloaded) during peak times. Without retry lo
 - `MODEL_PROVIDER` - "kimi" (default), "openai", or "anthropic"
 - `MODEL_NAME` - Model to use (e.g., "kimi-k2.5")
 - `NANOCLAW_BASE_PATH` - Base path for group folders (default: "/workspace/group")
+- `WEB_POLICY_GLOBAL_PATH` - Host global web policy path (default `~/.config/nanoclaw/web-policy.global.json`)
+- `WEB_BROKER_PORT` - Host relay/web broker port (default `18081`)
+- `WEB_FETCH_TIMEOUT_MS` - Default broker timeout (default `30000`)
+- `WEB_FETCH_MAX_BYTES` - Default max response bytes (default `1048576`)
 
 ## Local Testing (No WhatsApp Required)
 
@@ -212,55 +223,97 @@ echo '{"prompt":"Read the file hello.txt"}' | \
 
 **✅ Working:**
 - Build on macOS 26 (Tahoe) with Swift 6.2.3
-- Apple Containers (tested with alpine)
+- Apple Containers (tested with ubuntu + swift base)
 - API key loading from environment
 - OpenAI API calls (GPT-5.2) successful
 - Retry logic with exponential backoff (429 handling)
 - Local path support (absolute paths)
 - CLI argument parsing (no duplicate flags)
-- Tool calling verified (ReadTool via OpenAI)
-- Tool calling verified (BashTool via OpenAI)
+- Tool calling verified (ReadTool, WriteTool, BashTool via OpenAI)
+- Container networking with `--dns 8.8.8.8`
+- Tailscale/`utun` default-route environments auto-switch to host relay path for LLM calls
+- Node.js orchestration spawns Swift agent
+- File tools work in Apple Containers
 - Local CLI test suite passes (test-local.sh)
+- `swift test` passing (11 tests: CLI/config/tools/session/tool-call integration + web policy tool coverage)
+- `npm run typecheck` and `npm run build` passing
+- `npm run container:smoke` passing (image inspect, metadata list, `--env-file` + `-i` runtime)
+- `npm run container:netcheck` passing (default route + DNS + container egress diagnostics)
+- **Telegram Integration** (grammY library):
+  - Direct message support (DMs without @Andy trigger)
+  - Owner-only security (TELEGRAM_OWNER_ID)
+  - Auto-creates `telegram-direct` folder
+  - Runs alongside WhatsApp (dual channel support)
 
 **⏳ Pending:**
-- Container build test (Swift agent image)
-- Integration with Node.js orchestration
-- Unit test suite (still minimal)
- - Container network access to external APIs (blocked in Apple containers)
+- End-to-end WhatsApp integration test
+- Comprehensive unit test coverage
+- Production deployment validation
 
 ## Known Issues
 
 1. **Kimi API Overloaded** - Getting 429 errors consistently. Retry logic implemented to handle this.
-2. **No Comprehensive Tests** - Only placeholder tests exist.
-3. **Container Not Tested** - Dockerfile created but not validated.
+2. **E2E Channel Validation Pending** - Full WhatsApp end-to-end flow still needs live validation.
+3. **Local Container Metadata Drift Can Recur** - Stale digest refs in local `container` state can break image-management commands.
 
 ## Release Blockers (Must Fix Before Release)
 
-1. **Container Build + Run**
-   - Build Swift container image
-   - Run end-to-end agent inside Apple container
+### ✅ FIXED - Container Build + Run
+- **Cross-compilation**: Swift binary built for Linux using Static Linux SDK
+- **Container image**: `nanoclawswift-agent:static` built successfully
+- **Base image**: Uses `swift:6.2.3-slim` (has CA certificates pre-installed)
 
-2. **Node.js Integration**
-   - Verify container runner spawns Swift agent
-   - Validate IPC files are written and consumed
+### ✅ FIXED - Node.js Integration
+- Updated `container-runner.ts` to spawn Swift agent with CLI args
+- Added `--dns 8.8.8.8` for DNS resolution
+- Updated runtime env passing to use `--env-file` (compatible with `-i` on container 0.9.0)
+- Changed from JSON stdin to CLI args + prompt stdin
+- Added startup preflight in `container-runner.ts`:
+  - verifies configured `CONTAINER_IMAGE` via `container image inspect`
+  - checks `container image ls` and emits actionable recovery guidance for digest metadata drift
+  - runs once per process with concurrency-safe promise caching
 
-3. **Test Coverage**
-   - Add unit tests for ConfigLoader, tools, sessions
-   - Add integration test for tool calling
+### ✅ MITIGATED - Local container image metadata mismatch
+**Observed**: host-level stale digest refs caused `container image ls` failures.
 
-4. **Container Networking**
-   - Apple containers currently cannot resolve external hosts (DNS failure)
-   - `container run` has no outbound network even with `--dns 8.8.8.8`
-   - Must enable outbound networking or configure container system networking
-   - Without this, OpenAI/Kimi API calls fail inside container
+**Mitigation performed**:
+- Backed up local state file.
+- Removed stale references for `docker.io/library/swift:6.2.3*`.
+- Restarted `container` services.
+
+**Validation**:
+- `container image ls` succeeds.
+- `container run --rm docker.io/alpine:3.20 echo ok` succeeds.
+- `container run -i --env-file ...` correctly injects env vars on container 0.9.0.
+
+### 🔄 REMAINING - Test Coverage
+- [ ] End-to-end WhatsApp integration test
+- [ ] Add comprehensive unit tests
+- [ ] Production deployment validation
+
+### 🔄 REMAINING - Deployment Gate (Network Constrained)
+- [ ] Pull builder base image: `container image pull docker.io/library/swift:6.2.3`
+- [ ] Rebuild runtime image: `container build -f container/Dockerfile.slim -t nanoclawswift-agent:slim .`
+- [ ] Confirm image freshness: `container image inspect nanoclawswift-agent:slim` (check `org.opencontainers.image.created`)
+- [ ] Run in-container tool verification (ensure `web_fetch`/`web_search`/`web_policy_*` are available in Telegram/DM flow)
+
+## Offline-Mode Checklist (Can Continue Without Image Pull)
+
+- [x] Type safety and compile checks: `npm run typecheck`, `npm run build`
+- [x] Swift tests and tool tests passing: `swift test`
+- [x] Container runtime smoke checks: `npm run container:smoke`
+- [x] Container/VPN diagnostics: `npm run container:netcheck`
+- [x] Relay reliability improvement applied: upstream keep-alive agent reuse in `src/container-runner.ts`
+- [x] Documentation and handover updated for Tailscale/relay behavior and web policy architecture
+- [ ] Final rebuilt-image E2E (Telegram) once network allows builder pull
 
 ## Next Steps
 
-1. Wait for Kimi API capacity or try during off-peak hours
-2. Test container build: `./container/build-swift.sh slim`
-3. Write comprehensive unit tests
-4. Integration test with Node.js orchestration
-5. Production deployment
+1. **Unblock Build Base Pull**: complete `docker.io/library/swift:6.2.3` pull, then rebuild `nanoclawswift-agent:slim`.
+2. **E2E Messaging Validation**: run full Telegram/WhatsApp → Node orchestrator → Swift container agent → response loop using rebuilt image.
+3. **Resilience**: add optional auto-remediation command path (guarded) for stale local image metadata when preflight detects digest drift.
+4. **Observability**: emit structured preflight metrics/events for image inspect and metadata checks.
+5. **Production Rollout Gate**: validate scheduled-task flows and collect baseline performance/latency metrics before production cutover.
 
 ## Notes
 
@@ -269,3 +322,4 @@ echo '{"prompt":"Read the file hello.txt"}' | \
 - File operations use Foundation FileManager (battle-tested)
 - All file permissions follow security best practices
 - SwiftAgents fork only as last resort
+- Swarm migration is phased: dependency source aligned to `Swarm.git` while keeping SwiftAgents 0.3.1 API surface
