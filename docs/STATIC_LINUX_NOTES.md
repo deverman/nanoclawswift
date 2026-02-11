@@ -1,6 +1,6 @@
 # Static Linux Notes (Deferred)
 
-These notes capture what we learned about static Linux builds. This work is deferred until after the slim container path is complete.
+These notes capture what we learned about static Linux builds. This work is deferred until after the Ubuntu 22.04 builder path is complete.
 
 ## Why static Linux came up
 
@@ -8,7 +8,7 @@ Apple containers run Linux. macOS binaries won’t execute inside Linux containe
 
 ## Status
 
-- Deferred. We are staying on the `swift:6.2.3-slim` container for now.
+- Deferred. We are using an Ubuntu 22.04 builder stage with the official Swift 6.2.3 toolchain.
 
 ## What we learned
 

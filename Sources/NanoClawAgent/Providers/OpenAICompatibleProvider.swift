@@ -204,17 +204,13 @@ public actor OpenAICompatibleProvider: InferenceProvider {
                 let arguments: [String: SendableValue]
                 if let argsData = argumentsString.data(using: .utf8),
                    let argsDict = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any] {
-                    arguments = argsDict.compactMapValues { value -> SendableValue? in
-                        if let str = value as? String { return .string(str) }
-                        if let num = value as? NSNumber {
-                            if num === true as NSNumber || num === false as NSNumber {
-                                return .bool(num.boolValue)
-                            }
-                            return .int(Int(num.int64Value))
+                    var converted: [String: SendableValue] = [:]
+                    for (key, value) in argsDict {
+                        if let sendable = convertToSendableValue(value) {
+                            converted[key] = sendable
                         }
-                        if let arr = value as? [String] { return .array(arr.map { .string($0) }) }
-                        return nil
                     }
+                    arguments = converted
                 } else {
                     arguments = [:]
                 }
@@ -228,6 +224,37 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         }
         
         return (content, parsedToolCalls, finishReason)
+    }
+
+    private func convertToSendableValue(_ value: Any) -> SendableValue? {
+        if value is NSNull { return .null }
+        if let str = value as? String { return .string(str) }
+        if let bool = value as? Bool { return .bool(bool) }
+        if let num = value as? NSNumber {
+            // NSNumber can represent booleans as well.
+            if num === true as NSNumber || num === false as NSNumber {
+                return .bool(num.boolValue)
+            }
+            let doubleValue = num.doubleValue
+            let intValue = num.int64Value
+            if Double(intValue) == doubleValue {
+                return .int(Int(intValue))
+            }
+            return .double(doubleValue)
+        }
+        if let array = value as? [Any] {
+            return .array(array.compactMap { convertToSendableValue($0) })
+        }
+        if let dictionary = value as? [String: Any] {
+            var converted: [String: SendableValue] = [:]
+            for (key, item) in dictionary {
+                if let sendable = convertToSendableValue(item) {
+                    converted[key] = sendable
+                }
+            }
+            return .dictionary(converted)
+        }
+        return nil
     }
     
     private func buildRequest(

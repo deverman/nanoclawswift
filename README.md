@@ -9,7 +9,7 @@
 
 ## Overview
 
-**NanoClawSwift** is a complete rewrite of NanoClaw in Swift, built with the SwiftAgents framework. It maintains the same security-by-isolation philosophy while adding model agnosticism, better performance, and modern Swift concurrency.
+**NanoClawSwift** is a complete rewrite of NanoClaw in Swift, built with the SwiftAgents framework (sourced from the renamed `Swarm` repository, pinned to `0.3.1`). It maintains the same security-by-isolation philosophy while adding model agnosticism, better performance, and modern Swift concurrency.
 
 ### Key Improvements
 
@@ -59,7 +59,7 @@ echo '{"prompt":"What is 2+2?"}' | ./.build/release/nanoclaw-agent --group-folde
 │  │  ┌─────────────────────────────────────────────────────────────┐ │  │
 │  │  │ NanoClawAgent (SwiftAgents Framework)                       │ │  │
 │  │  │ ├─ ReAct Agent Loop with tool calling                       │ │  │
-│  │  │ ├─ FileSystem, Bash, and IPC Tools                          │ │  │
+│  │  │ ├─ FileSystem, Bash, IPC, WebFetch/WebSearch Tools          │ │  │
 │  │  │ ├─ CLAUDEMemory (CLAUDE.md context)                         │ │  │
 │  │  │ └─ FileBasedSession (JSON persistence)                      │ │  │
 │  │  └─────────────────────────────────────────────────────────────┘ │  │
@@ -114,6 +114,15 @@ Create `/workspace/config.json`:
   --is-scheduled-task
 ```
 
+### Web Policy Configuration
+
+NanoClaw now uses a two-layer web policy model:
+
+- Global baseline (host-managed): `~/.config/nanoclaw/web-policy.global.json`
+- Group overlay (container-writable): `groups/<group>/.nanoclaw/web-policy.overlay.json`
+
+Use `config-examples/web-policy.global.json` as a template.
+
 ## Philosophy (Still True)
 
 **Small enough to understand.** The Swift implementation is ~2,000 lines vs 10,000+ in the original.
@@ -138,6 +147,8 @@ Create `/workspace/config.json`:
 - **Container isolation** - Apple containers with filesystem mounts
 - **File tools** - Read, write, edit, glob, grep files safely
 - **Bash execution** - Commands run inside container, not on host
+- **Web tools** - `web_fetch` / `web_search` via host broker (works with Tailscale exit-node routing)
+- **Group-scoped web policy** - Container can directly manage per-group overlay allowlist
 - **IPC communication** - Send WhatsApp messages, schedule tasks
 - **Session persistence** - Conversation history in JSON files
 - **Conversation archiving** - Automatic transcript saving
@@ -151,7 +162,7 @@ nanoclawswift/
 │   ├── NanoClawAgent.swift        # Agent implementation
 │   ├── Configuration/             # Config loading
 │   ├── Providers/                 # LLM providers (Kimi, OpenAI)
-│   ├── Tools/                     # FileSystem, Bash, IPC tools
+│   ├── Tools/                     # FileSystem, Bash, IPC, Web tools
 │   ├── Memory/                    # Session & CLAUDE.md
 │   └── Hooks/                     # Conversation archiving
 ├── Tests/                         # Swift tests
@@ -234,6 +245,6 @@ Same as original NanoClaw - see LICENSE file.
 ## Credits
 
 - Original NanoClaw by Gavriel Cohen
-- SwiftAgents framework by Christopher Karani
+- SwiftAgents framework by Christopher Karani (repo renamed to Swarm)
 - Kimi API by Moonshot AI
 - Swift Argument Parser by Apple

@@ -240,6 +240,7 @@ public actor NanoClawAgent: Agent {
             let maxIterations = 10
             var finalOutput: String?
             var toolCallsExecuted = false
+            var executedToolOutputs: [(name: String, output: String)] = []
             
             while iterations < maxIterations && finalOutput == nil {
                 iterations += 1
@@ -269,7 +270,8 @@ public actor NanoClawAgent: Agent {
                         prompt: fullPrompt,
                         options: InferenceOptions.default
                     )
-                    finalOutput = finalResponse ?? "I apologize, but I couldn't generate a response."
+                    let raw = finalResponse ?? ""
+                    finalOutput = Self.normalizeFinalOutput(raw, executedToolOutputs: executedToolOutputs)
                     break
                 }
 
@@ -350,12 +352,13 @@ public actor NanoClawAgent: Agent {
                         if let memory {
                             await memory.add(.tool(toolResult.description, toolName: toolCall.name))
                         }
+                        executedToolOutputs.append((name: toolCall.name, output: toolResult.description))
                     }
                     // Tool calls executed; next iteration will request final response
                     toolCallsExecuted = true
                 } else if let content = inferenceResponse.content {
                     // Final response
-                    finalOutput = content
+                    finalOutput = Self.normalizeFinalOutput(content, executedToolOutputs: executedToolOutputs)
                 } else {
                     // Empty response
                     finalOutput = "I apologize, but I couldn't generate a response."
@@ -458,7 +461,7 @@ public actor NanoClawAgent: Agent {
         return NanoClawAgentResult(
             status: "success",
             result: result.output,
-            newSessionId: await session.sessionId
+            newSessionId: session.sessionId
         )
     }
     
@@ -474,6 +477,8 @@ public actor NanoClawAgent: Agent {
         - Reading and writing files
         - Executing bash commands
         - Searching with grep and glob patterns
+        - Fetching/searching the web through host broker tools
+        - Managing group-scoped web allowlist policy
         - Sending WhatsApp messages (use send_message tool)
         - Scheduling recurring or one-time tasks
         
@@ -484,6 +489,8 @@ public actor NanoClawAgent: Agent {
         4. Respect the container filesystem boundaries (/workspace/group)
         5. For scheduled tasks, use schedule_task with appropriate schedule_type
         6. Be concise in your responses
+        7. Never output raw tool-call code blocks like ```tool ...``` in your final answer
+        8. After using tools, respond with plain language and include the tool result directly
         
         When the user asks you to modify files:
         1. Read the file first
@@ -502,6 +509,11 @@ public actor NanoClawAgent: Agent {
             EditTool(),
             GlobTool(),
             GrepTool(),
+            WebFetchTool(),
+            WebSearchTool(),
+            WebPolicyAddDomainTool(),
+            WebPolicyRemoveDomainTool(),
+            WebPolicyListTool(),
             BashTool()
         ]
         
@@ -545,6 +557,55 @@ public actor NanoClawAgent: Agent {
         parts.append("\n## User Input\n\n\(input)")
         
         return parts.joined(separator: "\n\n")
+    }
+
+    private static func normalizeFinalOutput(
+        _ output: String,
+        executedToolOutputs: [(name: String, output: String)]
+    ) -> String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty && !executedToolOutputs.isEmpty {
+            return formatToolFallback(executedToolOutputs)
+        }
+        if looksLikeRawToolInvocation(trimmed), !executedToolOutputs.isEmpty {
+            return formatToolFallback(executedToolOutputs)
+        }
+        return output
+    }
+
+    private static func looksLikeRawToolInvocation(_ output: String) -> Bool {
+        if output.hasPrefix("```tool") { return true }
+        if output == "list_tasks" || output == "schedule_task" || output == "web_search" || output == "web_fetch" {
+            return true
+        }
+        if output.hasPrefix("```") {
+            let cleaned = output
+                .replacingOccurrences(of: "```tool", with: "")
+                .replacingOccurrences(of: "```", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.range(
+                of: #"^(list_tasks|schedule_task|pause_task|resume_task|cancel_task|send_message|web_search|web_fetch)([:\s].*)?$"#,
+                options: .regularExpression
+            ) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func formatToolFallback(_ executedToolOutputs: [(name: String, output: String)]) -> String {
+        if executedToolOutputs.count == 1, let first = executedToolOutputs.first {
+            if first.name == "list_tasks" {
+                return "Scheduled tasks:\n\(first.output)"
+            }
+            return first.output
+        }
+
+        return executedToolOutputs
+            .map { item in
+                "Result from \(item.name):\n\(item.output)"
+            }
+            .joined(separator: "\n\n")
     }
 }
 
@@ -600,20 +661,93 @@ private struct ScheduleTaskToolWrapper: Tool {
     let name = "schedule_task"
     let description = "Schedules a recurring or one-time task"
     let parameters: [ToolParameter] = [
-        ToolParameter(name: "prompt", description: "Task prompt/instructions", type: .string),
-        ToolParameter(name: "schedule_type", description: "Schedule type: 'cron', 'once', or 'interval'", type: .string),
-        ToolParameter(name: "schedule_value", description: "Schedule value (cron expression, ISO date, or interval seconds)", type: .string),
+        ToolParameter(name: "prompt", description: "Task prompt/instructions", type: .string, isRequired: false),
+        ToolParameter(name: "description", description: "Alias for prompt", type: .string, isRequired: false),
+        ToolParameter(name: "schedule_type", description: "Schedule type: 'cron', 'once', 'interval', or 'recurring' (alias for daily cron)", type: .string),
+        ToolParameter(name: "schedule_value", description: "Schedule value (cron expression, ISO date, or interval milliseconds)", type: .string, isRequired: false),
+        ToolParameter(name: "time", description: "Alias for recurring daily time in HH:mm (e.g. 08:00)", type: .string, isRequired: false),
         ToolParameter(name: "context_mode", description: "Context mode: 'group' (with history) or 'isolated' (fresh session)", type: .string, isRequired: false, defaultValue: .string("group"))
     ]
     
     let groupFolder: String
     let chatJid: String
     let isMain: Bool
+
+    private func resolvedGroupFolder() -> String {
+        if let envGroup = ProcessInfo.processInfo.environment["NANOCLAW_GROUP_FOLDER"],
+           !envGroup.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return envGroup
+        }
+        return groupFolder
+    }
+
+    private func normalizeSchedule(
+        scheduleType rawType: String,
+        scheduleValue rawValue: String,
+        time: String
+    ) -> (type: String, value: String)? {
+        let type = rawType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let dailyTime = time.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch type {
+        case "cron", "once", "interval":
+            if !value.isEmpty {
+                return (type, value)
+            }
+            if type == "cron", let cron = hhmmToDailyCron(dailyTime) {
+                return ("cron", cron)
+            }
+            return nil
+        case "recurring":
+            if !value.isEmpty {
+                return ("cron", value)
+            }
+            if let cron = hhmmToDailyCron(dailyTime) {
+                return ("cron", cron)
+            }
+            // Safe default: 08:00 local daily
+            return ("cron", "0 8 * * *")
+        default:
+            // If caller omitted schedule_type but provided a time, assume daily recurring.
+            if let cron = hhmmToDailyCron(dailyTime) {
+                return ("cron", cron)
+            }
+            return nil
+        }
+    }
+
+    private func hhmmToDailyCron(_ hhmm: String) -> String? {
+        let comps = hhmm.split(separator: ":")
+        guard comps.count == 2,
+              let hour = Int(comps[0]),
+              let minute = Int(comps[1]),
+              (0...23).contains(hour),
+              (0...59).contains(minute) else {
+            return nil
+        }
+        return "\(minute) \(hour) * * *"
+    }
     
     func execute(arguments: [String: SendableValue]) async throws -> SendableValue {
-        let prompt = arguments["prompt"]?.stringValue ?? ""
-        let scheduleType = arguments["schedule_type"]?.stringValue ?? "once"
-        let scheduleValue = arguments["schedule_value"]?.stringValue ?? ""
+        let prompt = (arguments["prompt"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let description = (arguments["description"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedPrompt = prompt.isEmpty ? description : prompt
+        if resolvedPrompt.isEmpty {
+            return .string("Error: missing task prompt/description")
+        }
+
+        let scheduleTypeRaw = arguments["schedule_type"]?.stringValue ?? ""
+        let scheduleValueRaw = arguments["schedule_value"]?.stringValue ?? ""
+        let timeRaw = arguments["time"]?.stringValue ?? ""
+        guard let normalized = normalizeSchedule(
+            scheduleType: scheduleTypeRaw,
+            scheduleValue: scheduleValueRaw,
+            time: timeRaw
+        ) else {
+            return .string("Error: invalid schedule arguments. Use schedule_type + schedule_value, or recurring + time (HH:mm).")
+        }
+
         let contextMode = arguments["context_mode"]?.stringValue ?? "group"
         
         let ipcDir = "/workspace/ipc/tasks"
@@ -622,12 +756,12 @@ private struct ScheduleTaskToolWrapper: Tool {
         
         let payload: [String: Any] = [
             "type": "schedule_task",
-            "group_folder": groupFolder,
+            "group_folder": resolvedGroupFolder(),
             "chat_jid": chatJid,
             "is_main": isMain,
-            "prompt": prompt,
-            "schedule_type": scheduleType,
-            "schedule_value": scheduleValue,
+            "prompt": resolvedPrompt,
+            "schedule_type": normalized.type,
+            "schedule_value": normalized.value,
             "context_mode": contextMode,
             "timestamp": ISO8601DateFormatter().string(from: Date())
         ]
@@ -635,7 +769,7 @@ private struct ScheduleTaskToolWrapper: Tool {
         let data = try JSONSerialization.data(withJSONObject: payload)
         try data.write(to: URL(fileURLWithPath: filepath))
         
-        return .string("Task scheduled successfully")
+        return .string("Task scheduled successfully (\(normalized.type): \(normalized.value))")
     }
 }
 
@@ -649,30 +783,38 @@ private struct ListTasksToolWrapper: Tool {
     let isMain: Bool
     
     func execute(arguments: [String: SendableValue]) async throws -> SendableValue {
-        let ipcDir = "/workspace/ipc/tasks"
-        
-        guard FileManager.default.fileExists(atPath: ipcDir) else {
-            return .string("No tasks directory found")
+        let snapshotPath = "/workspace/ipc/current_tasks.json"
+        guard FileManager.default.fileExists(atPath: snapshotPath) else {
+            return .string("No scheduled tasks")
         }
-        
-        let files = try FileManager.default.contentsOfDirectory(atPath: ipcDir)
-        var tasks: [String] = []
-        
-        for file in files where file.hasSuffix(".json") {
-            let filepath = "\(ipcDir)/\(file)"
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: filepath)),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  json["type"] as? String == "schedule_task" else {
-                continue
-            }
-            
-            if let prompt = json["prompt"] as? String,
-               let scheduleType = json["schedule_type"] as? String {
-                tasks.append("- \(prompt.prefix(50))... (\(scheduleType))")
-            }
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: snapshotPath))
+        guard let items = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return .string("No scheduled tasks")
         }
-        
-        return .string(tasks.isEmpty ? "No scheduled tasks" : tasks.joined(separator: "\n"))
+
+        let filtered = items.filter { item in
+            guard let status = item["status"] as? String else { return false }
+            guard status == "active" || status == "paused" else { return false }
+            if isMain { return true }
+            return (item["groupFolder"] as? String) == groupFolder
+        }
+
+        if filtered.isEmpty {
+            return .string("No scheduled tasks")
+        }
+
+        let lines = filtered.map { item -> String in
+            let id = (item["id"] as? String) ?? "unknown"
+            let prompt = (item["prompt"] as? String) ?? "(no prompt)"
+            let scheduleType = (item["schedule_type"] as? String) ?? "unknown"
+            let scheduleValue = (item["schedule_value"] as? String) ?? "unknown"
+            let status = (item["status"] as? String) ?? "unknown"
+            let nextRun = (item["next_run"] as? String) ?? "n/a"
+            return "- [\(status)] \(id): \(prompt.prefix(80))... (\(scheduleType): \(scheduleValue), next: \(nextRun))"
+        }
+
+        return .string(lines.joined(separator: "\n"))
     }
 }
 
@@ -727,7 +869,7 @@ private struct CancelTaskToolWrapper: Tool {
 // MARK: - NanoClawAgentResult
 
 /// Result type specific to NanoClawAgent (for CLI compatibility).
-public struct NanoClawAgentResult {
+public struct NanoClawAgentResult: Sendable {
     let status: String
     let result: String
     let newSessionId: String

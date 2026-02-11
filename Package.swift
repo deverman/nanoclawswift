@@ -12,16 +12,23 @@ let package = Package(
             name: "nanoclaw-agent",
             targets: ["NanoClawAgent"]
         ),
+        .executable(
+            name: "session-summary",
+            targets: ["SessionSummaryCLI"]
+        ),
     ],
     dependencies: [
         // SwiftAgents - Pinned to exact version for stability
-        .package(url: "https://github.com/christopherkarani/SwiftAgents.git", exact: "0.3.1"),
+        .package(url: "https://github.com/christopherkarani/Swarm.git", exact: "0.3.1"),
         
         // CLI argument parsing
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
 
         // Structured logging (latest)
         .package(url: "https://github.com/apple/swift-log.git", from: "1.9.1"),
+
+        // Configuration (for logging and runtime settings)
+        .package(url: "https://github.com/apple/swift-configuration", from: "1.0.2"),
 
         // Apple Containerization (target version 0.8.0+)
         .package(url: "https://github.com/apple/containerization.git", from: "0.8.0"),
@@ -30,9 +37,10 @@ let package = Package(
         .executableTarget(
             name: "NanoClawAgent",
             dependencies: [
-                .product(name: "SwiftAgents", package: "SwiftAgents"),
+                .product(name: "SwiftAgents", package: "Swarm"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Configuration", package: "swift-configuration"),
             ],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
@@ -42,10 +50,16 @@ let package = Package(
             name: "NanoClawAgentTests",
             dependencies: [
                 "NanoClawAgent",
-                .product(name: "SwiftAgents", package: "SwiftAgents"),
+                .product(name: "SwiftAgents", package: "Swarm"),
             ],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .executableTarget(
+            name: "SessionSummaryCLI",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]
         ),
     ]

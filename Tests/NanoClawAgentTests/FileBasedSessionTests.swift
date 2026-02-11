@@ -1,15 +1,16 @@
 import Testing
 import Foundation
+import SwiftAgents
 @testable import NanoClawAgent
 
 @Test
 func testFileBasedSessionPersistsMessages() async throws {
     let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    setenv("NANOCLAW_BASE_PATH", tempDir.path, 1)
-    defer { unsetenv("NANOCLAW_BASE_PATH") }
+    defer { try? FileManager.default.removeItem(at: tempDir) }
 
-    let session = FileBasedSession(groupFolder: "group-a")
+    let groupPath = tempDir.appendingPathComponent("group-a").path
+    let session = FileBasedSession(groupFolder: groupPath)
     try await session.addItems([
         MemoryMessage.user("Hello"),
         MemoryMessage.assistant("Hi")
@@ -19,7 +20,7 @@ func testFileBasedSessionPersistsMessages() async throws {
     #expect(items.count == 2)
     #expect(items.first?.content == "Hello")
 
-    let sessionFile = tempDir.appendingPathComponent("group-a/.nanoclaw/session.json")
+    let sessionFile = URL(fileURLWithPath: groupPath).appendingPathComponent(".nanoclaw/session.json")
     #expect(FileManager.default.fileExists(atPath: sessionFile.path))
 
     let attributes = try FileManager.default.attributesOfItem(atPath: sessionFile.path)
@@ -32,10 +33,10 @@ func testFileBasedSessionPersistsMessages() async throws {
 func testFileBasedSessionPopItem() async throws {
     let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    setenv("NANOCLAW_BASE_PATH", tempDir.path, 1)
-    defer { unsetenv("NANOCLAW_BASE_PATH") }
+    defer { try? FileManager.default.removeItem(at: tempDir) }
 
-    let session = FileBasedSession(groupFolder: "group-b")
+    let groupPath = tempDir.appendingPathComponent("group-b").path
+    let session = FileBasedSession(groupFolder: groupPath)
     try await session.addItems([
         MemoryMessage.user("One"),
         MemoryMessage.assistant("Two")

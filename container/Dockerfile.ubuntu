@@ -1,0 +1,30 @@
+# NanoClawSwift Agent - Ubuntu Runtime with pre-installed certs
+# Uses Ubuntu base for better DNS support
+
+FROM ubuntu:22.04
+
+# Copy CA certificates from swift image (already has them)
+COPY --from=swift:6.2.3-slim /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+
+# Copy the pre-built static binary
+COPY .build/aarch64-swift-linux-musl/release/nanoclaw-agent /app/nanoclaw-agent
+
+# Create working directory
+WORKDIR /app
+
+# Create non-root user and workspace
+RUN useradd -m -s /bin/bash nanoclaw && \
+    mkdir -p /workspace/group /workspace/ipc/messages /workspace/ipc/tasks /workspace/sessions && \
+    chown -R nanoclaw:nanoclaw /workspace && \
+    chmod 750 /workspace /workspace/group /workspace/ipc /workspace/ipc/messages /workspace/ipc/tasks /workspace/sessions
+
+# Set environment
+ENV SWIFT_BACKTRACE=none
+ENV ASSISTANT_NAME=Andy
+
+# Switch to non-root user
+USER nanoclaw
+
+# Entry point
+ENTRYPOINT ["/app/nanoclaw-agent"]

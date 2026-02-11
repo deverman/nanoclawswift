@@ -1,9 +1,4 @@
-import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason,
-  makeCacheableSignalKeyStore,
-  WASocket
-} from '@whiskeysockets/baileys';
+import type { WASocket } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { exec, execSync } from 'child_process';
 import fs from 'fs';
@@ -17,13 +12,16 @@ import {
   TRIGGER_PATTERN,
   MAIN_GROUP_FOLDER,
   IPC_POLL_INTERVAL,
-  TIMEZONE
+  TIMEZONE,
+  WHATSAPP_ENABLED
 } from './config.js';
 import { RegisteredGroup, Session, NewMessage } from './types.js';
 import { initDatabase, storeMessage, storeChatMetadata, getNewMessages, getMessagesSince, getAllTasks, getTaskById, updateChatName, getAllChats, getLastGroupSync, setLastGroupSync } from './db.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, AvailableGroup } from './container-runner.js';
 import { loadJson, saveJson } from './utils.js';
+import { startTelegramBot, stopTelegramBot, type MyContext } from './telegram-bot.js';
+import { Bot } from 'grammy';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -33,10 +31,12 @@ const logger = pino({
 });
 
 let sock: WASocket;
+let telegramBot: Bot<MyContext> | null = null;
 let lastTimestamp = '';
 let sessions: Session = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
+let backgroundLoopsStarted = false;
 
 async function setTyping(jid: string, isTyping: boolean): Promise<void> {
   try {
@@ -214,12 +214,47 @@ async function runAgent(group: RegisteredGroup, prompt: string, chatJid: string)
 }
 
 async function sendMessage(jid: string, text: string): Promise<void> {
+  const telegramMatch = jid.match(/^telegram_(-?\d+)@/);
+  if (telegramMatch) {
+    if (!telegramBot) {
+      logger.error({ jid }, 'Failed to send Telegram message: bot not initialized');
+      return;
+    }
+    const chatId = parseInt(telegramMatch[1], 10);
+    if (Number.isNaN(chatId)) {
+      logger.error({ jid }, 'Failed to send Telegram message: invalid chat id');
+      return;
+    }
+    try {
+      await telegramBot.api.sendMessage(chatId, text);
+      logger.info({ jid, length: text.length }, 'Telegram message sent');
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to send Telegram message');
+    }
+    return;
+  }
+
   try {
+    if (!sock) {
+      logger.error({ jid }, 'Failed to send WhatsApp message: socket not initialized');
+      return;
+    }
     await sock.sendMessage(jid, { text });
     logger.info({ jid, length: text.length }, 'Message sent');
   } catch (err) {
     logger.error({ jid, err }, 'Failed to send message');
   }
+}
+
+function ensureBackgroundLoopsStarted(): void {
+  if (backgroundLoopsStarted) return;
+  backgroundLoopsStarted = true;
+  startSchedulerLoop({
+    sendMessage,
+    registeredGroups: () => registeredGroups,
+    getSessions: () => sessions
+  });
+  startIpcWatcher();
 }
 
 function startIpcWatcher(): void {
@@ -316,6 +351,7 @@ async function processTaskIpc(
     schedule_value?: string;
     context_mode?: string;
     groupFolder?: string;
+    group_folder?: string;
     chatJid?: string;
     // For register_group
     jid?: string;
@@ -333,9 +369,11 @@ async function processTaskIpc(
 
   switch (data.type) {
     case 'schedule_task':
-      if (data.prompt && data.schedule_type && data.schedule_value && data.groupFolder) {
+      // Support both camelCase and snake_case from container IPC payloads.
+      const requestedGroupFolder = data.groupFolder || data.group_folder;
+      if (data.prompt && data.schedule_type && data.schedule_value && requestedGroupFolder) {
         // Authorization: non-main groups can only schedule for themselves
-        const targetGroup = data.groupFolder;
+        const targetGroup = requestedGroupFolder;
         if (!isMain && targetGroup !== sourceGroup) {
           logger.warn({ sourceGroup, targetGroup }, 'Unauthorized schedule_task attempt blocked');
           break;
@@ -473,6 +511,10 @@ async function processTaskIpc(
 }
 
 async function connectWhatsApp(): Promise<void> {
+  const baileys = await import('@whiskeysockets/baileys');
+  const makeWASocket = baileys.default;
+  const { useMultiFileAuthState, DisconnectReason, makeCacheableSignalKeyStore } = baileys;
+
   const authDir = path.join(STORE_DIR, 'auth');
   fs.mkdirSync(authDir, { recursive: true });
 
@@ -515,12 +557,7 @@ async function connectWhatsApp(): Promise<void> {
       setInterval(() => {
         syncGroupMetadata().catch(err => logger.error({ err }, 'Periodic group sync failed'));
       }, GROUP_SYNC_INTERVAL_MS);
-      startSchedulerLoop({
-        sendMessage,
-        registeredGroups: () => registeredGroups,
-        getSessions: () => sessions
-      });
-      startIpcWatcher();
+      ensureBackgroundLoopsStarted();
       startMessageLoop();
     }
   });
@@ -603,8 +640,42 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
-  await connectWhatsApp();
+  ensureBackgroundLoopsStarted();
+  
+  // Start channels (Telegram and/or WhatsApp)
+  const promises: Promise<void>[] = [];
+  
+  if (WHATSAPP_ENABLED) {
+    // WhatsApp enabled by default
+    promises.push(connectWhatsApp());
+  } else {
+    logger.warn('WHATSAPP_ENABLED=0, skipping WhatsApp startup');
+  }
+  
+  // Telegram is optional (only if token is set)
+  promises.push(
+    startTelegramBot().then(bot => {
+      telegramBot = bot;
+    }).catch(err => {
+      logger.error({ err }, 'Failed to start Telegram bot');
+    })
+  );
+  
+  await Promise.all(promises);
 }
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  logger.info('Shutting down...');
+  await stopTelegramBot(telegramBot);
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  logger.info('Shutting down...');
+  await stopTelegramBot(telegramBot);
+  process.exit(0);
+});
 
 main().catch(err => {
   logger.error({ err }, 'Failed to start NanoClaw');

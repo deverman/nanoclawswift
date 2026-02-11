@@ -56,7 +56,7 @@ jobs:
         cd container
         ./build-swift.sh slim
         
-    - name: Test container basic operation
+    - name: Test container runtime smoke checks
       run: |
         container system start || true
-        container run --rm nanoclawswift-agent:slim echo "Container test successful"
+        CONTAINER_IMAGE=nanoclawswift-agent:slim ./scripts/container-smoke.sh

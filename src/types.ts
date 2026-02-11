@@ -77,3 +77,66 @@ export interface TaskRunLog {
   result: string | null;
   error: string | null;
 }
+
+export interface WebPolicyDefaults {
+  timeoutMs: number;
+  maxBytes: number;
+}
+
+export interface WebPolicyGlobal {
+  version: number;
+  allow: string[];
+  deny: string[];
+  defaults: WebPolicyDefaults;
+}
+
+export interface WebPolicyOverlay {
+  version: number;
+  allow: string[];
+  deny: string[];
+}
+
+export interface EffectiveWebPolicy {
+  allow: string[];
+  deny: string[];
+  defaults: WebPolicyDefaults;
+}
+
+export interface WebFetchRequest {
+  groupFolder: string;
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+  maxBytes?: number;
+}
+
+export interface WebFetchResponse {
+  ok: true;
+  url: string;
+  status: number;
+  statusText: string;
+  contentType: string;
+  content: string;
+  bytes: number;
+  truncated: boolean;
+  redirects: string[];
+}
+
+export interface WebSearchRequest {
+  groupFolder: string;
+  query: string;
+  limit?: number;
+}
+
+export interface WebSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export interface WebSearchResponse {
+  ok: true;
+  query: string;
+  results: WebSearchResult[];
+}

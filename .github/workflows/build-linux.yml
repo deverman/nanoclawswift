@@ -1,0 +1,66 @@
+name: Build Linux Binary (glibc)
+
+on:
+  push:
+    branches: [ main, swift-agent ]
+    paths:
+      - 'Sources/**'
+      - 'Package.swift'
+      - '.github/workflows/build-linux.yml'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v2
+      with:
+        swift-version: '6.2.3'
+    
+    - name: Cache Swift packages
+      uses: actions/cache@v4
+      with:
+        path: .build
+        key: ${{ runner.os }}-swift-${{ hashFiles('Package.resolved') }}
+        restore-keys: |
+          ${{ runner.os }}-swift-
+    
+    - name: Build Release Binary
+      run: |
+        swift build -c release --target NanoClawAgent
+        # Verify it's dynamically linked with glibc
+        file .build/release/nanoclaw-agent
+        ldd .build/release/nanoclaw-agent | head -10
+    
+    - name: Test Binary
+      run: |
+        # Quick smoke test
+        echo '{"prompt":"test"}' | timeout 5 .build/release/nanoclaw-agent \
+          --config /dev/null \
+          --group-folder /tmp \
+          --chat-jid test@g.us 2>&1 | head -5 || true
+    
+    - name: Upload Binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: nanoclaw-agent-linux-glibc
+        path: .build/release/nanoclaw-agent
+        retention-days: 30
+    
+    - name: Create Release
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/swift-agent'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: nightly-${{ github.sha }}
+        name: Nightly Build ${{ github.sha }}
+        files: .build/release/nanoclaw-agent
+        prerelease: true
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

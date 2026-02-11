@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftAgents
 @testable import NanoClawAgent
 
 actor ToolCallRecorder {
@@ -28,12 +29,8 @@ struct EchoTool: Tool {
     }
 }
 
-actor MockInferenceProvider: InferenceProvider {
-    private(set) var didCallGenerate = false
-    private(set) var didCallTool = false
-
+struct MockInferenceProvider: InferenceProvider {
     func generate(prompt: String, options: InferenceOptions) async throws -> String {
-        didCallGenerate = true
         return "final"
     }
 
@@ -49,8 +46,6 @@ actor MockInferenceProvider: InferenceProvider {
         tools: [ToolDefinition],
         options: InferenceOptions
     ) async throws -> InferenceResponse {
-        didCallTool = true
-
         let toolCall = InferenceResponse.ParsedToolCall(
             id: UUID().uuidString,
             name: "echo",
@@ -81,7 +76,7 @@ func testToolCallLoopExecutesToolAndFinalResponse() async throws {
         configurationName: "TestAgent"
     )
 
-    let result = try await agent.run("Hello", session: nil, hooks: nil)
+    let result = try await agent.run("Hello")
     #expect(result.output == "final")
 
     let called = await recorder.called

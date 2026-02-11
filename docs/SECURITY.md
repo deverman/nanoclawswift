@@ -62,8 +62,9 @@ Messages and task operations are verified against group identity:
 
 ### 5. Credential Handling
 
-**Mounted Credentials:**
-- Claude auth tokens (filtered from `.env`, read-only)
+**Runtime Credentials:**
+- Model/provider credentials are passed via a generated `--env-file` at launch time.
+- Optional Claude auth token can be included when present.
 
 **NOT Mounted:**
 - WhatsApp session (`store/auth/`) - host only
@@ -71,12 +72,32 @@ Messages and task operations are verified against group identity:
 - Any credentials matching blocked patterns
 
 **Credential Filtering:**
-Only these environment variables are exposed to containers:
+Only an allowlisted set of environment variables is exposed to containers:
 ```typescript
-const allowedVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
+const allowedVars = [
+  'MODEL_PROVIDER', 'MODEL_NAME',
+  'OPENAI_API_KEY', 'MOONSHOT_API_KEY', 'ANTHROPIC_API_KEY',
+  'BASE_URL', 'TIMEOUT', 'MAX_TOKENS', 'ASSISTANT_NAME',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'NANOCLAW_WEB_BROKER_URL', 'NANOCLAW_GROUP_FOLDER'
+];
 ```
 
-> **Note:** Anthropic credentials are mounted so that Claude Code can authenticate when the agent runs. However, this means the agent itself can discover these credentials via Bash or file operations. Ideally, Claude Code would authenticate without exposing credentials to the agent's execution environment, but I couldn't figure this out. **PRs welcome** if you have ideas for credential isolation.
+> **Note:** Any credentials passed to the container are available to processes inside the container. Keep the allowlist minimal and do not pass unrelated host secrets.
+
+### 6. Web Access Policy Model
+
+Web tools (`web_fetch`, `web_search`) execute through a host-side broker that enforces domain policy before outbound requests.
+
+- **Global baseline policy**: `~/.config/nanoclaw/web-policy.global.json`
+  - Host-managed and not mounted into containers.
+- **Group overlay policy**: `groups/{group}/.nanoclaw/web-policy.overlay.json`
+  - Mounted in the group folder and directly writable by container tools.
+  - Scope is limited to the current group only.
+
+Effective policy = `global allow + group allow`, with deny rules and hard-deny host checks applied first.
+
+Tradeoff: Bash remains unrestricted by design, so policy is best-effort for web tools rather than a strict network egress control.
 
 ## Privilege Comparison
 
@@ -88,6 +109,7 @@ const allowedVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
 | Additional mounts | Configurable | Read-only unless allowed |
 | Network access | Unrestricted | Unrestricted |
 | MCP tools | All | All |
+| Web policy overlay writes | Own group | Own group |
 
 ## Security Architecture Diagram
 

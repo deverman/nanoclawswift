@@ -243,7 +243,7 @@ private enum Log {
         func error(_ message: String) {
             // In production, this would use the proper swift-log API
             // For now, we print to stderr to avoid interfering with JSON output
-            var stderr = FileHandle.standardError
+            let stderr = FileHandle.standardError
             let data = "[CLAUDEMemory Error] \(message)\n".data(using: .utf8)!
             stderr.write(data)
         }
