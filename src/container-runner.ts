@@ -61,7 +61,8 @@ function parseCsvEnv(raw: string | undefined): string[] {
 }
 
 const CONTAINER_NO_DNS = process.env.CONTAINER_NO_DNS === '1';
-const CONTAINER_DNS_SERVERS = parseCsvEnv(process.env.CONTAINER_DNS_SERVERS || '8.8.8.8');
+// Default to system resolver behavior unless explicitly overridden.
+const CONTAINER_DNS_SERVERS = parseCsvEnv(process.env.CONTAINER_DNS_SERVERS);
 const CONTAINER_DNS_DOMAIN = process.env.CONTAINER_DNS_DOMAIN?.trim();
 const CONTAINER_DNS_OPTIONS = parseCsvEnv(process.env.CONTAINER_DNS_OPTIONS);
 const CONTAINER_DNS_SEARCH_DOMAINS = parseCsvEnv(process.env.CONTAINER_DNS_SEARCH);
@@ -92,8 +93,9 @@ const CONTAINER_LLM_RELAY_TIMEOUT = parseInt(
   process.env.CONTAINER_LLM_RELAY_TIMEOUT || '120000',
   10
 );
+// Default to host/system DNS for relay lookups; custom resolvers can be provided via env.
 const CONTAINER_LLM_RELAY_DNS_SERVERS = parseCsvEnv(
-  process.env.CONTAINER_LLM_RELAY_DNS_SERVERS || '1.1.1.1,8.8.8.8'
+  process.env.CONTAINER_LLM_RELAY_DNS_SERVERS
 );
 
 function detectDefaultRouteInterface(): string | null {
@@ -270,7 +272,9 @@ function shouldApplyRelay(containerEnv: Record<string, string>): boolean {
   if (CONTAINER_LLM_RELAY_MODE === 'off') return false;
   if (CONTAINER_LLM_RELAY_MODE === 'force') return true;
   if (containerEnv.BASE_URL) return false;
-  return ROUTED_VIA_UTUN;
+  // Auto mode is relay-first for resilience: container DNS/egress can fail
+  // even when the host default route is not utun* (split tunnel, local LAN exemptions).
+  return true;
 }
 
 function resolveRelayTarget(urlPath: string): { provider: RelayProvider; target: URL } | null {
