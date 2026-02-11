@@ -3,77 +3,28 @@ import Foundation
 
 // MARK: - NanoClawAgent
 
-/// Main NanoClaw Agent implementing the SwiftAgents `Agent` protocol.
-///
-/// `NanoClawAgent` is a ReAct-style agent that processes user prompts through
-/// an iterative loop of reasoning and tool execution. It integrates with:
-/// - CLAUDE.md memory for group-specific context
-/// - File-based session persistence for conversation history
-/// - Archiving hooks for audit trails
-/// - IPC tools for WhatsApp integration
-///
-/// ## Architecture
-///
-/// The agent follows the ReAct pattern:
-/// 1. **Reasoning**: Analyze the prompt and plan actions
-/// 2. **Acting**: Execute tools to gather information or perform actions
-/// 3. **Observing**: Process tool results and update understanding
-/// 4. **Responding**: Generate final response to the user
-///
-/// ## Thread Safety
-/// As an actor, `NanoClawAgent` provides automatic thread-safe access
-/// to all agent state through Swift's actor isolation.
-///
-/// ## Example Usage
-/// ```swift
-/// let config = NanoClawConfig(apiKey: "...", provider: .kimi)
-/// let agent = await NanoClawAgent(config: config, groupFolder: "my-group")
-///
-/// let result = try await agent.run("What's the weather?")
-/// print(result.output)
-/// ```
+/// Main NanoClaw agent facade backed by Swarm ToolCallingAgent.
 public actor NanoClawAgent: Agent {
     // MARK: Public
-    
-    /// The configuration for this agent.
+
     nonisolated public let configuration: AgentConfiguration
-    
-    /// The group folder this agent is associated with.
     nonisolated public let groupFolder: String
-    
-    /// Tools available to this agent.
     nonisolated public let tools: [any Tool]
-    
-    /// Instructions defining the agent's behavior.
     nonisolated public let instructions: String
-    
-    /// Memory system for context management (CLAUDE.md + conversation history).
     nonisolated public let memory: (any Memory)?
-    
-    /// Custom inference provider for LLM calls.
     nonisolated public let inferenceProvider: (any InferenceProvider)?
-    
-    /// Optional tracer for observability.
     nonisolated public let tracer: (any Tracer)?
-    
-    /// Input guardrails for validation.
     nonisolated public let inputGuardrails: [any InputGuardrail]
-    
-    /// Output guardrails for validation.
     nonisolated public let outputGuardrails: [any OutputGuardrail]
-    
-    /// Configured handoffs for multi-agent orchestration.
     nonisolated public let handoffs: [AnyHandoffConfiguration]
-    
+
+    // MARK: Private
+
+    private let baseToolAgent: ToolCallingAgent
+    private let providerRoute: String
+
     // MARK: - Initialization
-    
-    /// Creates a new NanoClawAgent with the given configuration.
-    ///
-    /// - Parameters:
-    ///   - config: The NanoClaw configuration (provider, model, API key, etc.)
-    ///   - groupFolder: The group folder name for isolation and memory
-    ///   - customInstructions: Optional custom instructions (defaults to CLAUDE.md)
-    ///   - customTools: Optional additional tools
+
     public init(
         config: NanoClawConfig,
         groupFolder: String,
@@ -81,21 +32,14 @@ public actor NanoClawAgent: Agent {
         customTools: [any Tool]? = nil
     ) async {
         self.groupFolder = groupFolder
-        
-        // Create inference provider
-        let provider = OpenAICompatibleProvider(
-            apiKey: config.apiKey,
-            baseURL: config.effectiveBaseURL,
-            model: config.model.rawValue,
-            timeout: config.timeout
-        )
+
+        let provider = await Self.buildInferenceProvider(config: config)
         self.inferenceProvider = provider
-        
-        // Initialize CLAUDE memory
+        self.providerRoute = "\(config.provider.rawValue)/\(config.model.rawValue)"
+
         let claudeMemory = await CLAUDEMemory(groupFolder: groupFolder)
         self.memory = claudeMemory
-        
-        // Build instructions
+
         let baseInstructions = customInstructions ?? Self.defaultInstructions(assistantName: config.assistantName)
         let claudeContext = await claudeMemory.claudeMdContent
         if !claudeContext.isEmpty {
@@ -103,34 +47,43 @@ public actor NanoClawAgent: Agent {
         } else {
             self.instructions = baseInstructions
         }
-        
-        // Build tool registry
+
         var allTools: [any Tool] = Self.createDefaultTools(groupFolder: groupFolder, chatJid: "default", isMain: false)
-        if let customTools = customTools {
+        if let customTools {
             allTools.append(contentsOf: customTools)
         }
         self.tools = allTools
-        
-        // Create agent configuration
+
         self.configuration = AgentConfiguration(
-            name: config.assistantName ?? "NanoClaw"
+            name: config.assistantName ?? "NanoClaw",
+            maxIterations: 10,
+            timeout: .seconds(config.timeout),
+            temperature: 0.7,
+            maxTokens: config.maxTokens,
+            includeToolCallDetails: true,
+            stopOnToolError: false,
+            sessionHistoryLimit: 50,
+            parallelToolCalls: false
         )
-        
-        // No guardrails by default (can be added later)
-        self.inputGuardrails = []
-        self.outputGuardrails = []
-        self.handoffs = []
+
         self.tracer = nil
+        self.handoffs = []
+        self.inputGuardrails = Self.defaultInputGuardrails()
+        self.outputGuardrails = Self.defaultOutputGuardrails()
+
+        self.baseToolAgent = ToolCallingAgent(
+            tools: self.tools,
+            instructions: self.instructions,
+            configuration: self.configuration,
+            memory: self.memory,
+            inferenceProvider: self.inferenceProvider,
+            tracer: self.tracer,
+            inputGuardrails: self.inputGuardrails,
+            outputGuardrails: self.outputGuardrails,
+            handoffs: self.handoffs
+        )
     }
-    
-    /// Creates a new NanoClawAgent with explicit parameters for the CLI.
-    ///
-    /// - Parameters:
-    ///   - config: The NanoClaw configuration
-    ///   - groupFolder: The group folder name
-    ///   - chatJid: The chat JID for IPC tools
-    ///   - isMain: Whether this is the main channel
-    ///   - isScheduledTask: Whether this is a scheduled task
+
     public init(
         config: NanoClawConfig,
         groupFolder: String,
@@ -139,24 +92,17 @@ public actor NanoClawAgent: Agent {
         isScheduledTask: Bool
     ) async {
         self.groupFolder = groupFolder
-        
-        // Create inference provider
-        let provider = OpenAICompatibleProvider(
-            apiKey: config.apiKey,
-            baseURL: config.effectiveBaseURL,
-            model: config.model.rawValue,
-            timeout: config.timeout
-        )
+
+        let provider = await Self.buildInferenceProvider(config: config)
         self.inferenceProvider = provider
-        
-        // Initialize CLAUDE memory
+        self.providerRoute = "\(config.provider.rawValue)/\(config.model.rawValue)"
+
         let claudeMemory = await CLAUDEMemory(groupFolder: groupFolder)
         self.memory = claudeMemory
-        
-        // Build instructions with optional scheduled task prefix
+
         let baseInstructions = Self.defaultInstructions(assistantName: config.assistantName)
         let claudeContext = await claudeMemory.claudeMdContent
-        
+
         var fullInstructions = ""
         if isScheduledTask {
             fullInstructions += "[SCHEDULED TASK - You are running automatically, not in response to a user message. Use send_message if needed to communicate with the user.]\n\n"
@@ -167,20 +113,37 @@ public actor NanoClawAgent: Agent {
             fullInstructions += baseInstructions
         }
         self.instructions = fullInstructions
-        
-        // Build tool registry with IPC tools configured
+
         self.tools = Self.createDefaultTools(groupFolder: groupFolder, chatJid: chatJid, isMain: isMain)
-        
-        // Create agent configuration
+
         self.configuration = AgentConfiguration(
-            name: config.assistantName ?? "NanoClaw"
+            name: config.assistantName ?? "NanoClaw",
+            maxIterations: 10,
+            timeout: .seconds(config.timeout),
+            temperature: 0.7,
+            maxTokens: config.maxTokens,
+            includeToolCallDetails: true,
+            stopOnToolError: false,
+            sessionHistoryLimit: 50,
+            parallelToolCalls: false
         )
-        
-        // No guardrails by default
-        self.inputGuardrails = []
-        self.outputGuardrails = []
-        self.handoffs = []
+
         self.tracer = nil
+        self.handoffs = []
+        self.inputGuardrails = Self.defaultInputGuardrails()
+        self.outputGuardrails = Self.defaultOutputGuardrails()
+
+        self.baseToolAgent = ToolCallingAgent(
+            tools: self.tools,
+            instructions: self.instructions,
+            configuration: self.configuration,
+            memory: self.memory,
+            inferenceProvider: self.inferenceProvider,
+            tracer: self.tracer,
+            inputGuardrails: self.inputGuardrails,
+            outputGuardrails: self.outputGuardrails,
+            handoffs: self.handoffs
+        )
     }
 
     /// Creates a NanoClawAgent with injected dependencies (used for tests).
@@ -197,245 +160,104 @@ public actor NanoClawAgent: Agent {
         self.tools = tools
         self.memory = memory
         self.inferenceProvider = inferenceProvider
+        self.providerRoute = "custom"
         self.configuration = AgentConfiguration(name: configurationName)
-        self.inputGuardrails = []
-        self.outputGuardrails = []
-        self.handoffs = []
         self.tracer = nil
-    }
-    
-    // MARK: - Agent Protocol Methods
-    
-    /// Executes the agent with the given input.
-    ///
-    /// This is the main entry point for running the agent. It implements
-    /// a ReAct-style loop of reasoning and tool execution.
-    ///
-    /// - Parameters:
-    ///   - input: The user's input/query
-    ///   - session: Optional session for conversation history
-    ///   - hooks: Optional hooks for lifecycle callbacks
-    /// - Returns: The result of the agent's execution
-    /// - Throws: `AgentError` if execution fails
-    public func run(_ input: String, session: (any Session)?, hooks: (any RunHooks)?) async throws -> AgentResult {
-        let builder = AgentResult.Builder()
-        builder.start()
-        
-        // Notify hooks
-        if let hooks {
-            await hooks.onAgentStart(context: nil, agent: self, input: input)
-        }
-        
-        do {
-            // Add user message to memory
-            if let memory {
-                await memory.add(.user(input))
-            }
-            
-            // Create tool registry for execution
-            let toolRegistry = ToolRegistry(tools: tools)
-            
-            // Main ReAct loop
-            var iterations = 0
-            let maxIterations = 10
-            var finalOutput: String?
-            var toolCallsExecuted = false
-            var executedToolOutputs: [(name: String, output: String)] = []
-            
-            while iterations < maxIterations && finalOutput == nil {
-                iterations += 1
-                builder.incrementIteration()
-                
-                // Check for cancellation
-                try Task.checkCancellation()
-                
-                // Build context from memory on each iteration
-                let contextString = if let memory {
-                    await memory.context(for: input, tokenLimit: 4000)
-                } else {
-                    ""
-                }
-                
-                // Construct the full prompt with context and instructions
-                let fullPrompt = Self.buildPrompt(
-                    input: input,
-                    instructions: instructions,
-                    context: contextString,
-                    tools: tools
-                )
-                
-                // If we've already executed tool calls, ask for a final response without tools
-                if toolCallsExecuted {
-                    let finalResponse = try await inferenceProvider?.generate(
-                        prompt: fullPrompt,
-                        options: InferenceOptions.default
-                    )
-                    let raw = finalResponse ?? ""
-                    finalOutput = Self.normalizeFinalOutput(raw, executedToolOutputs: executedToolOutputs)
-                    break
-                }
+        self.handoffs = []
+        self.inputGuardrails = Self.defaultInputGuardrails()
+        self.outputGuardrails = Self.defaultOutputGuardrails()
 
-                // Generate response with potential tool calls
-                if let hooks {
-                    await hooks.onLLMStart(context: nil, agent: self, systemPrompt: instructions, inputMessages: [])
+        self.baseToolAgent = ToolCallingAgent(
+            tools: tools,
+            instructions: instructions,
+            configuration: self.configuration,
+            memory: memory,
+            inferenceProvider: inferenceProvider,
+            tracer: self.tracer,
+            inputGuardrails: self.inputGuardrails,
+            outputGuardrails: self.outputGuardrails,
+            handoffs: self.handoffs
+        )
+    }
+
+    // MARK: - Agent Protocol Methods
+
+    public func run(_ input: String, session: (any Session)?, hooks: (any RunHooks)?) async throws -> AgentResult {
+        let tracker = PerformanceTracker()
+        await tracker.start()
+
+        let traceName = "nanoclaw-agent-run"
+        let traceGroupId: String? = if let session { session.sessionId } else { nil }
+
+        do {
+            let result = try await TraceContext.withTrace(
+                traceName,
+                groupId: traceGroupId,
+                metadata: [
+                    "groupFolder": .string(groupFolder),
+                    "agentName": .string(configuration.name)
+                ]
+            ) {
+                try await baseToolAgent.run(input, session: session, hooks: hooks)
+            }
+
+            let metrics = await tracker.finish()
+            return Self.withMetrics(
+                result: result,
+                metrics: metrics,
+                groupFolder: groupFolder,
+                providerRoute: providerRoute,
+                pseudoToolRejected: false
+            )
+        } catch let guardrailError as GuardrailError {
+            let fallbackOutput = Self.guardrailFallbackMessage(for: guardrailError)
+            if let hooks {
+                let guardrailName: String
+                let message: String
+                switch guardrailError {
+                case let .inputTripwireTriggered(name, msg, _):
+                    guardrailName = name
+                    message = msg ?? "Input blocked"
+                case let .outputTripwireTriggered(name, _, msg, _):
+                    guardrailName = name
+                    message = msg ?? "Output blocked"
+                case let .toolInputTripwireTriggered(name, _, msg, _):
+                    guardrailName = name
+                    message = msg ?? "Tool input blocked"
+                case let .toolOutputTripwireTriggered(name, _, msg, _):
+                    guardrailName = name
+                    message = msg ?? "Tool output blocked"
+                case let .executionFailed(name, err):
+                    guardrailName = name
+                    message = err
                 }
-                
-                let inferenceResponse = try await inferenceProvider?.generateWithToolCalls(
-                    prompt: fullPrompt,
-                    tools: tools.map { $0.definition },
-                    options: InferenceOptions.default
+                await hooks.onGuardrailTriggered(
+                    context: nil,
+                    guardrailName: guardrailName,
+                    guardrailType: .output,
+                    result: .tripwire(message: message)
                 )
-                
-                if let hooks, let inferenceResponse {
-                    await hooks.onLLMEnd(
-                        context: nil,
-                        agent: self,
-                        response: inferenceResponse.content ?? "",
-                        usage: inferenceResponse.usage
-                    )
-                }
-                
-                guard let inferenceResponse else {
-                    throw AgentError.generationFailed(reason: "Inference provider not available")
-                }
-                
-                // Process tool calls if any
-                if inferenceResponse.hasToolCalls {
-                    for toolCall in inferenceResponse.toolCalls {
-                        // Create ToolCall for result tracking
-                        let tc = ToolCall(
-                            toolName: toolCall.name,
-                            arguments: toolCall.arguments
-                        )
-                        builder.addToolCall(tc)
-                        
-                        // Notify hooks
-                        if let hooks {
-                            await hooks.onToolStart(
-                                context: nil,
-                                agent: self,
-                                tool: ToolWrapper(name: toolCall.name),
-                                arguments: toolCall.arguments
-                            )
-                        }
-                        
-                        // Execute the tool
-                        let toolResult: SendableValue
-                        do {
-                            toolResult = try await toolRegistry.execute(
-                                toolNamed: toolCall.name,
-                                arguments: toolCall.arguments,
-                                agent: self,
-                                context: nil,
-                                hooks: hooks
-                            )
-                        } catch {
-                            toolResult = .string("Error: \(error.localizedDescription)")
-                        }
-                        
-                        // Add tool result
-                        let tr = ToolResult(
-                            callId: tc.id,
-                            isSuccess: true,
-                            output: toolResult,
-                            duration: .zero,
-                            errorMessage: nil
-                        )
-                        builder.addToolResult(tr)
-                        
-                        // Notify hooks
-                        if let hooks {
-                            await hooks.onToolEnd(context: nil, agent: self, tool: ToolWrapper(name: toolCall.name), result: toolResult)
-                        }
-                        
-                        // Add to memory
-                        if let memory {
-                            await memory.add(.tool(toolResult.description, toolName: toolCall.name))
-                        }
-                        executedToolOutputs.append((name: toolCall.name, output: toolResult.description))
-                    }
-                    // Tool calls executed; next iteration will request final response
-                    toolCallsExecuted = true
-                } else if let content = inferenceResponse.content {
-                    // Final response
-                    finalOutput = Self.normalizeFinalOutput(content, executedToolOutputs: executedToolOutputs)
-                } else {
-                    // Empty response
-                    finalOutput = "I apologize, but I couldn't generate a response."
-                }
             }
-            
-            // Set final output
-            let output = finalOutput ?? "I apologize, but I couldn't complete the task within the allowed iterations."
-            builder.setOutput(output)
-            
-            // Add assistant message to memory
-            if let memory {
-                await memory.add(.assistant(output))
-            }
-            
-            // Notify hooks
-            if let hooks {
-                let result = builder.build()
-                await hooks.onAgentEnd(context: nil, agent: self, result: result)
-            }
-            
-            return builder.build()
-            
-        } catch {
-            // Notify hooks of error
-            if let hooks {
-                await hooks.onError(context: nil, agent: self, error: error)
-            }
-            throw error
+            return Self.withMetrics(
+                result: AgentResult(output: fallbackOutput, metadata: ["guardrail": .string(guardrailError.localizedDescription)]),
+                metrics: await tracker.finish(),
+                groupFolder: groupFolder,
+                providerRoute: providerRoute,
+                pseudoToolRejected: true
+            )
         }
     }
-    
-    /// Streams the agent's execution, yielding events as they occur.
-    ///
-    /// - Parameters:
-    ///   - input: The user's input/query
-    ///   - session: Optional session for conversation history
-    ///   - hooks: Optional hooks for lifecycle callbacks
-    /// - Returns: An async stream of agent events
+
     nonisolated public func stream(_ input: String, session: (any Session)?, hooks: (any RunHooks)?) -> AsyncThrowingStream<AgentEvent, Error> {
-        AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    // Start event
-                    continuation.yield(.started(input: input))
-                    
-                    // Run the agent
-                    let result = try await self.run(input, session: session, hooks: hooks)
-                    
-                    // Yield completion event
-                    continuation.yield(.completed(result: result))
-                    continuation.finish()
-                } catch {
-                    continuation.yield(.failed(error: error as? AgentError ?? AgentError.generationFailed(reason: error.localizedDescription)))
-                    continuation.finish(throwing: error)
-                }
-            }
-        }
+        baseToolAgent.stream(input, session: session, hooks: hooks)
     }
-    
-    /// Cancels any ongoing execution.
+
     public func cancel() async {
-        // The ReAct loop checks for cancellation via Task.checkCancellation()
-        // This method serves as a signal for potential future cancellation mechanisms
+        await baseToolAgent.cancel()
     }
-    
+
     // MARK: - Run Methods (Backward Compatible)
-    
-    /// Runs the agent with a prompt (backward compatible method).
-    ///
-    /// - Parameters:
-    ///   - prompt: The user prompt
-    ///   - sessionId: Optional session ID for continuity
-    ///   - chatJid: The chat JID
-    ///   - isMain: Whether this is the main channel
-    ///   - isScheduledTask: Whether this is a scheduled task
-    /// - Returns: NanoClaw-specific result type
+
     public func run(
         prompt: String,
         sessionId: String?,
@@ -443,36 +265,126 @@ public actor NanoClawAgent: Agent {
         isMain: Bool,
         isScheduledTask: Bool
     ) async throws -> NanoClawAgentResult {
-        // Get or create session
         let session: any Session
-        if let sessionId = sessionId {
+        if let sessionId {
             session = FileBasedSession(groupFolder: groupFolder, sessionId: sessionId)
         } else {
             session = FileBasedSession(groupFolder: groupFolder)
         }
-        
-        // Create archiving hooks
+
         let archiveHooks = ArchivingHooks(groupFolder: groupFolder)
-        
-        // Run the agent
         let result = try await run(prompt, session: session, hooks: archiveHooks)
-        
-        // Return NanoClaw-specific result
+
         return NanoClawAgentResult(
             status: "success",
             result: result.output,
             newSessionId: session.sessionId
         )
     }
-    
+
     // MARK: - Private Helpers
-    
-    /// Default system instructions for the agent.
+
+    private static func buildInferenceProvider(config: NanoClawConfig) async -> any InferenceProvider {
+        let provider = OpenAICompatibleProvider(
+            apiKey: config.apiKey,
+            baseURL: config.effectiveBaseURL,
+            model: config.model.rawValue,
+            timeout: config.timeout
+        )
+
+        let multiProvider = MultiProvider(defaultProvider: provider)
+        try? await multiProvider.register(prefix: config.provider.rawValue, provider: provider)
+        await multiProvider.setModel("\(config.provider.rawValue)/\(config.model.rawValue)")
+        return multiProvider
+    }
+
+    private static func withMetrics(
+        result: AgentResult,
+        metrics: PerformanceMetrics,
+        groupFolder: String,
+        providerRoute: String,
+        pseudoToolRejected: Bool
+    ) -> AgentResult {
+        var metadata = result.metadata
+        metadata["nanoclaw.group_folder"] = .string(groupFolder)
+        metadata["nanoclaw.provider_route"] = .string(providerRoute)
+        metadata["nanoclaw.tool_call_count"] = .int(result.toolCalls.count)
+        metadata["nanoclaw.pseudo_tool_rejected"] = .bool(pseudoToolRejected)
+        metadata["metrics.totalDurationMs"] = .double(Double(metrics.totalDuration.components.seconds * 1000))
+        metadata["metrics.toolCount"] = .int(metrics.toolCount)
+        metadata["metrics.usedParallelExecution"] = .bool(metrics.usedParallelExecution)
+
+        return AgentResult(
+            output: result.output,
+            toolCalls: result.toolCalls,
+            toolResults: result.toolResults,
+            iterationCount: result.iterationCount,
+            duration: result.duration,
+            tokenUsage: result.tokenUsage,
+            metadata: metadata
+        )
+    }
+
+    private static func guardrailFallbackMessage(for error: GuardrailError) -> String {
+        switch error {
+        case let .inputTripwireTriggered(name, message, _):
+            if name == "nanoclaw_tool_syntax_input_guardrail" {
+                return "I cannot execute raw tool-block syntax from user input. Please ask in plain language and I will call tools using structured tool calls."
+            }
+            return message ?? "Input blocked by policy."
+        case let .outputTripwireTriggered(name, _, message, _):
+            if name == "nanoclaw_tool_syntax_output_guardrail" {
+                return "I could not execute that action because the model did not issue a valid structured tool call. Please retry your request."
+            }
+            return message ?? "Output blocked by policy."
+        case let .toolInputTripwireTriggered(_, _, message, _),
+             let .toolOutputTripwireTriggered(_, _, message, _):
+            return message ?? "Tool request blocked by policy."
+        case .executionFailed:
+            return "A safety policy check failed unexpectedly. Please retry."
+        }
+    }
+
+    private static func defaultInputGuardrails() -> [any InputGuardrail] {
+        let guardrail = ClosureInputGuardrail(name: "nanoclaw_tool_syntax_input_guardrail") { input, _ in
+            if containsPseudoToolSyntax(input) {
+                return .tripwire(
+                    message: "Raw tool block syntax is not accepted in input.",
+                    metadata: ["reason": .string("pseudo_tool_syntax")]
+                )
+            }
+            return .passed()
+        }
+        return [guardrail]
+    }
+
+    private static func defaultOutputGuardrails() -> [any OutputGuardrail] {
+        let guardrail = ClosureOutputGuardrail(name: "nanoclaw_tool_syntax_output_guardrail") { output, _, _ in
+            if containsPseudoToolSyntax(output) {
+                return .tripwire(
+                    message: "Model output contained raw tool block syntax instead of structured tool calls.",
+                    metadata: ["reason": .string("pseudo_tool_syntax")]
+                )
+            }
+            return .passed()
+        }
+        return [guardrail]
+    }
+
+    private static func containsPseudoToolSyntax(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("```tool") {
+            return true
+        }
+        let pattern = #"(schedule_task|list_tasks|cancel_task|pause_task|resume_task|send_message|web_search|web_fetch)\s*:\s*\d+\s*>\s*\{"#
+        return trimmed.range(of: pattern, options: .regularExpression) != nil
+    }
+
     private static func defaultInstructions(assistantName: String?) -> String {
         let name = assistantName ?? "Andy"
         return """
         You are \(name), a helpful AI assistant running in a NanoClaw container.
-        
+
         You have access to various tools for:
         - Reading and writing files
         - Executing bash commands
@@ -481,7 +393,7 @@ public actor NanoClawAgent: Agent {
         - Managing group-scoped web allowlist policy
         - Sending WhatsApp messages (use send_message tool)
         - Scheduling recurring or one-time tasks
-        
+
         Guidelines:
         1. Always use tools when available rather than guessing
         2. Read files before editing them
@@ -491,7 +403,7 @@ public actor NanoClawAgent: Agent {
         6. Be concise in your responses
         7. Never output raw tool-call code blocks like ```tool ...``` in your final answer
         8. After using tools, respond with plain language and include the tool result directly
-        
+
         When the user asks you to modify files:
         1. Read the file first
         2. Show what changes you plan to make
@@ -499,10 +411,8 @@ public actor NanoClawAgent: Agent {
         4. Confirm what was done
         """
     }
-    
-    /// Creates the default set of tools for the agent.
+
     private static func createDefaultTools(groupFolder: String, chatJid: String, isMain: Bool) -> [any Tool] {
-        // File system tools
         let fileTools: [any Tool] = [
             ReadTool(),
             WriteTool(),
@@ -516,8 +426,7 @@ public actor NanoClawAgent: Agent {
             WebPolicyListTool(),
             BashTool()
         ]
-        
-        // IPC tools for WhatsApp integration - use Sendable tool wrappers
+
         let ipcTools: [any Tool] = [
             SendMessageToolWrapper(chatJid: chatJid, groupFolder: groupFolder),
             ScheduleTaskToolWrapper(groupFolder: groupFolder, chatJid: chatJid, isMain: isMain),
@@ -526,89 +435,10 @@ public actor NanoClawAgent: Agent {
             ResumeTaskToolWrapper(groupFolder: groupFolder),
             CancelTaskToolWrapper(groupFolder: groupFolder)
         ]
-        
+
         return fileTools + ipcTools
     }
-    
-    /// Builds the full prompt with context and instructions.
-    private static func buildPrompt(
-        input: String,
-        instructions: String,
-        context: String,
-        tools: [any Tool]
-    ) -> String {
-        var parts: [String] = []
-        
-        // System instructions
-        parts.append("## System Instructions\n\n\(instructions)")
-        
-        // Available tools
-        parts.append("## Available Tools\n")
-        for tool in tools {
-            parts.append("- \(tool.name): \(tool.description)")
-        }
-        
-        // Context if available
-        if !context.isEmpty {
-            parts.append("\n## Context\n\n\(context)")
-        }
-        
-        // User input
-        parts.append("\n## User Input\n\n\(input)")
-        
-        return parts.joined(separator: "\n\n")
-    }
-
-    private static func normalizeFinalOutput(
-        _ output: String,
-        executedToolOutputs: [(name: String, output: String)]
-    ) -> String {
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty && !executedToolOutputs.isEmpty {
-            return formatToolFallback(executedToolOutputs)
-        }
-        if looksLikeRawToolInvocation(trimmed), !executedToolOutputs.isEmpty {
-            return formatToolFallback(executedToolOutputs)
-        }
-        return output
-    }
-
-    private static func looksLikeRawToolInvocation(_ output: String) -> Bool {
-        if output.hasPrefix("```tool") { return true }
-        if output == "list_tasks" || output == "schedule_task" || output == "web_search" || output == "web_fetch" {
-            return true
-        }
-        if output.hasPrefix("```") {
-            let cleaned = output
-                .replacingOccurrences(of: "```tool", with: "")
-                .replacingOccurrences(of: "```", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if cleaned.range(
-                of: #"^(list_tasks|schedule_task|pause_task|resume_task|cancel_task|send_message|web_search|web_fetch)([:\s].*)?$"#,
-                options: .regularExpression
-            ) != nil {
-                return true
-            }
-        }
-        return false
-    }
-
-    private static func formatToolFallback(_ executedToolOutputs: [(name: String, output: String)]) -> String {
-        if executedToolOutputs.count == 1, let first = executedToolOutputs.first {
-            if first.name == "list_tasks" {
-                return "Scheduled tasks:\n\(first.output)"
-            }
-            return first.output
-        }
-
-        return executedToolOutputs
-            .map { item in
-                "Result from \(item.name):\n\(item.output)"
-            }
-            .joined(separator: "\n\n")
-    }
 }
-
 // MARK: - ToolWrapper
 
 /// Simple tool wrapper for hooks callbacks.
@@ -622,10 +452,14 @@ private struct ToolWrapper: Tool {
     }
 }
 
+private func resolveIPCBasePath() -> String {
+    ProcessInfo.processInfo.environment["NANOCLAW_IPC_BASE_PATH"] ?? "/workspace/ipc"
+}
+
 // MARK: - IPC Tool Wrappers
 
 /// Wrapper for SendMessageTool that provides proper initialization.
-private struct SendMessageToolWrapper: Tool {
+struct SendMessageToolWrapper: Tool {
     let name = "send_message"
     let description = "Sends a WhatsApp message to the group"
     let parameters: [ToolParameter] = [
@@ -637,7 +471,7 @@ private struct SendMessageToolWrapper: Tool {
     
     func execute(arguments: [String: SendableValue]) async throws -> SendableValue {
         let message = arguments["message"]?.stringValue ?? ""
-        let ipcDir = "/workspace/ipc/messages"
+        let ipcDir = "\(resolveIPCBasePath())/messages"
         let filename = "\(UUID().uuidString).json"
         let filepath = "\(ipcDir)/\(filename)"
         
@@ -657,7 +491,7 @@ private struct SendMessageToolWrapper: Tool {
 }
 
 /// Wrapper for ScheduleTaskTool.
-private struct ScheduleTaskToolWrapper: Tool {
+struct ScheduleTaskToolWrapper: Tool {
     let name = "schedule_task"
     let description = "Schedules a recurring or one-time task"
     let parameters: [ToolParameter] = [
@@ -750,7 +584,7 @@ private struct ScheduleTaskToolWrapper: Tool {
 
         let contextMode = arguments["context_mode"]?.stringValue ?? "group"
         
-        let ipcDir = "/workspace/ipc/tasks"
+        let ipcDir = "\(resolveIPCBasePath())/tasks"
         let filename = "\(UUID().uuidString).json"
         let filepath = "\(ipcDir)/\(filename)"
         
@@ -774,7 +608,7 @@ private struct ScheduleTaskToolWrapper: Tool {
 }
 
 /// Wrapper for ListTasksTool.
-private struct ListTasksToolWrapper: Tool {
+struct ListTasksToolWrapper: Tool {
     let name = "list_tasks"
     let description = "Lists all scheduled tasks"
     let parameters: [ToolParameter] = []
@@ -783,7 +617,7 @@ private struct ListTasksToolWrapper: Tool {
     let isMain: Bool
     
     func execute(arguments: [String: SendableValue]) async throws -> SendableValue {
-        let snapshotPath = "/workspace/ipc/current_tasks.json"
+        let snapshotPath = "\(resolveIPCBasePath())/current_tasks.json"
         guard FileManager.default.fileExists(atPath: snapshotPath) else {
             return .string("No scheduled tasks")
         }
@@ -819,7 +653,7 @@ private struct ListTasksToolWrapper: Tool {
 }
 
 /// Wrapper for PauseTaskTool.
-private struct PauseTaskToolWrapper: Tool {
+struct PauseTaskToolWrapper: Tool {
     let name = "pause_task"
     let description = "Pauses a scheduled task"
     let parameters: [ToolParameter] = [
@@ -827,15 +661,39 @@ private struct PauseTaskToolWrapper: Tool {
     ]
     
     let groupFolder: String
+
+    private func resolvedGroupFolder() -> String {
+        if let envGroup = ProcessInfo.processInfo.environment["NANOCLAW_GROUP_FOLDER"],
+           !envGroup.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return envGroup
+        }
+        return groupFolder
+    }
     
     func execute(arguments: [String: SendableValue]) async throws -> SendableValue {
         let taskId = arguments["task_id"]?.stringValue ?? ""
-        return .string("Task \(taskId) paused")
+        guard !taskId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .string("Error: missing task_id")
+        }
+
+        let ipcDir = "\(resolveIPCBasePath())/tasks"
+        let filename = "\(UUID().uuidString).json"
+        let filepath = "\(ipcDir)/\(filename)"
+        let payload: [String: Any] = [
+            "type": "pause_task",
+            "task_id": taskId,
+            "group_folder": resolvedGroupFolder(),
+            "timestamp": ISO8601DateFormatter().string(from: Date())
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        try data.write(to: URL(fileURLWithPath: filepath))
+
+        return .string("Task \(taskId) pause requested")
     }
 }
 
 /// Wrapper for ResumeTaskTool.
-private struct ResumeTaskToolWrapper: Tool {
+struct ResumeTaskToolWrapper: Tool {
     let name = "resume_task"
     let description = "Resumes a paused scheduled task"
     let parameters: [ToolParameter] = [
@@ -843,15 +701,39 @@ private struct ResumeTaskToolWrapper: Tool {
     ]
     
     let groupFolder: String
+
+    private func resolvedGroupFolder() -> String {
+        if let envGroup = ProcessInfo.processInfo.environment["NANOCLAW_GROUP_FOLDER"],
+           !envGroup.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return envGroup
+        }
+        return groupFolder
+    }
     
     func execute(arguments: [String: SendableValue]) async throws -> SendableValue {
         let taskId = arguments["task_id"]?.stringValue ?? ""
-        return .string("Task \(taskId) resumed")
+        guard !taskId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .string("Error: missing task_id")
+        }
+
+        let ipcDir = "\(resolveIPCBasePath())/tasks"
+        let filename = "\(UUID().uuidString).json"
+        let filepath = "\(ipcDir)/\(filename)"
+        let payload: [String: Any] = [
+            "type": "resume_task",
+            "task_id": taskId,
+            "group_folder": resolvedGroupFolder(),
+            "timestamp": ISO8601DateFormatter().string(from: Date())
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        try data.write(to: URL(fileURLWithPath: filepath))
+
+        return .string("Task \(taskId) resume requested")
     }
 }
 
 /// Wrapper for CancelTaskTool.
-private struct CancelTaskToolWrapper: Tool {
+struct CancelTaskToolWrapper: Tool {
     let name = "cancel_task"
     let description = "Cancels a scheduled task"
     let parameters: [ToolParameter] = [
@@ -859,10 +741,34 @@ private struct CancelTaskToolWrapper: Tool {
     ]
     
     let groupFolder: String
+
+    private func resolvedGroupFolder() -> String {
+        if let envGroup = ProcessInfo.processInfo.environment["NANOCLAW_GROUP_FOLDER"],
+           !envGroup.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return envGroup
+        }
+        return groupFolder
+    }
     
     func execute(arguments: [String: SendableValue]) async throws -> SendableValue {
         let taskId = arguments["task_id"]?.stringValue ?? ""
-        return .string("Task \(taskId) cancelled")
+        guard !taskId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .string("Error: missing task_id")
+        }
+
+        let ipcDir = "\(resolveIPCBasePath())/tasks"
+        let filename = "\(UUID().uuidString).json"
+        let filepath = "\(ipcDir)/\(filename)"
+        let payload: [String: Any] = [
+            "type": "cancel_task",
+            "task_id": taskId,
+            "group_folder": resolvedGroupFolder(),
+            "timestamp": ISO8601DateFormatter().string(from: Date())
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        try data.write(to: URL(fileURLWithPath: filepath))
+
+        return .string("Task \(taskId) cancel requested")
     }
 }
 

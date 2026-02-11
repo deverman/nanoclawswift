@@ -222,6 +222,14 @@ public actor OpenAICompatibleProvider: InferenceProvider {
                 ))
             }
         }
+
+        if parsedToolCalls.isEmpty,
+           let content,
+           content.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("```tool") {
+            logger.warning("Model returned pseudo tool syntax in text without structured tool_calls.", metadata: [
+                "model": "\(model)"
+            ])
+        }
         
         return (content, parsedToolCalls, finishReason)
     }
@@ -273,7 +281,7 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         var body: [String: Any] = [
             "model": model,
             "messages": messages,
-            "temperature": options.temperature,
+            "temperature": requestTemperature(from: options.temperature),
             maxTokensKey: options.maxTokens ?? 2048
         ]
         
@@ -332,6 +340,16 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         }
         request.httpBody = bodyData
         return request
+    }
+
+    private func requestTemperature(from requested: Double) -> Double {
+        // Moonshot/Kimi endpoints can reject non-1 values for temperature on some models.
+        // Force compatibility here to avoid request failures.
+        let host = (baseURL.host ?? "").lowercased()
+        if model.lowercased().hasPrefix("kimi") || host.contains("moonshot") {
+            return 1.0
+        }
+        return requested
     }
 
     private func schema(for type: ToolParameter.ParameterType) -> [String: Any] {

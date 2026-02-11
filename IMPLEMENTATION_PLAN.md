@@ -3,7 +3,7 @@
 **Repository**: https://github.com/deverman/nanoclawswift  
 **Base**: https://github.com/gavrielc/nanoclaw  
 **Branch**: swift-agent  
-**Status**: Validation Mode - Core runtime stable on container 0.9.0, test suites green, Tailscale-aware relay + web broker implemented, group-scoped web policy overlays active. Final deploy validation is currently blocked by network-constrained image pull (`swift:6.2.3` builder base).
+**Status**: Validation Mode - Core runtime stable on container 0.9.0, test suites green, Tailscale-aware relay + web broker implemented, group-scoped web policy overlays active, and Telegram E2E schedule/list/cancel flows validated.
 
 ## Current Progress
 
@@ -153,7 +153,7 @@
 - [x] Swift tools: `web_fetch`, `web_search`, `web_policy_add_domain`, `web_policy_remove_domain`, `web_policy_list`
 - [x] Group overlay persistence in `groups/{group}/.nanoclaw/web-policy.overlay.json`
 - [x] Test coverage for web policy overlay tools
-- [ ] Rebuild `nanoclawswift-agent:slim` from current sources and verify tool availability in-container (pending network recovery for `swift:6.2.3` pull)
+- [x] Rebuild `nanoclawswift-agent:slim` from current sources and verify tool availability in-container
 
 ## Retry Logic Implementation
 
@@ -235,7 +235,7 @@ echo '{"prompt":"Read the file hello.txt"}' | \
 - Node.js orchestration spawns Swift agent
 - File tools work in Apple Containers
 - Local CLI test suite passes (test-local.sh)
-- `swift test` passing (11 tests: CLI/config/tools/session/tool-call integration + web policy tool coverage)
+- `swift test` passing (13 tests: CLI/config/tools/session/tool-call integration, pseudo-tool rejection, schedule/cancel IPC persistence, web policy tool coverage)
 - `npm run typecheck` and `npm run build` passing
 - `npm run container:smoke` passing (image inspect, metadata list, `--env-file` + `-i` runtime)
 - `npm run container:netcheck` passing (default route + DNS + container egress diagnostics)
@@ -272,6 +272,14 @@ echo '{"prompt":"Read the file hello.txt"}' | \
   - verifies configured `CONTAINER_IMAGE` via `container image inspect`
   - checks `container image ls` and emits actionable recovery guidance for digest metadata drift
   - runs once per process with concurrency-safe promise caching
+- Added relay conflict diagnosis and recovery path:
+  - detect `EADDRINUSE` on relay port (`18081`) from stale local dev process
+  - recover by terminating stale process and restarting app cleanly
+
+### ✅ FIXED - Kimi request compatibility
+- `OpenAICompatibleProvider` now normalizes temperature for Moonshot/Kimi requests.
+- Kimi models that only accept `temperature=1` no longer fail with HTTP 400.
+- Validation completed via Telegram E2E after rebuild/restart.
 
 ### ✅ MITIGATED - Local container image metadata mismatch
 **Observed**: host-level stale digest refs caused `container image ls` failures.
@@ -291,11 +299,11 @@ echo '{"prompt":"Read the file hello.txt"}' | \
 - [ ] Add comprehensive unit tests
 - [ ] Production deployment validation
 
-### 🔄 REMAINING - Deployment Gate (Network Constrained)
-- [ ] Pull builder base image: `container image pull docker.io/library/swift:6.2.3`
-- [ ] Rebuild runtime image: `container build -f container/Dockerfile.slim -t nanoclawswift-agent:slim .`
-- [ ] Confirm image freshness: `container image inspect nanoclawswift-agent:slim` (check `org.opencontainers.image.created`)
-- [ ] Run in-container tool verification (ensure `web_fetch`/`web_search`/`web_policy_*` are available in Telegram/DM flow)
+### ✅ Deployment Gate Completed
+- [x] Pull/update builder base image: `docker.io/library/swift:6.2.3-slim`
+- [x] Rebuild runtime image: `./container/build-swift.sh slim`
+- [x] Confirm runtime behavior after rebuild via Telegram DM flows
+- [x] Verify tool availability in-container (`web_fetch`/`web_search`/`web_policy_*`)
 
 ## Offline-Mode Checklist (Can Continue Without Image Pull)
 
@@ -305,15 +313,14 @@ echo '{"prompt":"Read the file hello.txt"}' | \
 - [x] Container/VPN diagnostics: `npm run container:netcheck`
 - [x] Relay reliability improvement applied: upstream keep-alive agent reuse in `src/container-runner.ts`
 - [x] Documentation and handover updated for Tailscale/relay behavior and web policy architecture
-- [ ] Final rebuilt-image E2E (Telegram) once network allows builder pull
+- [x] Final rebuilt-image E2E (Telegram) completed
 
 ## Next Steps
 
-1. **Unblock Build Base Pull**: complete `docker.io/library/swift:6.2.3` pull, then rebuild `nanoclawswift-agent:slim`.
-2. **E2E Messaging Validation**: run full Telegram/WhatsApp → Node orchestrator → Swift container agent → response loop using rebuilt image.
-3. **Resilience**: add optional auto-remediation command path (guarded) for stale local image metadata when preflight detects digest drift.
-4. **Observability**: emit structured preflight metrics/events for image inspect and metadata checks.
-5. **Production Rollout Gate**: validate scheduled-task flows and collect baseline performance/latency metrics before production cutover.
+1. **Mac mini bring-up**: follow the runbook in `README.md` ("Mac Mini Bring-Up (Telegram First)").
+2. **Resilience**: add optional guarded auto-remediation for stale local image metadata when preflight detects digest drift.
+3. **Observability**: emit structured preflight metrics/events for image inspect and metadata checks.
+4. **Production Rollout Gate**: collect baseline performance/latency metrics before production cutover.
 
 ## Notes
 

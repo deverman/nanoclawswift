@@ -2,6 +2,8 @@
 
 A personal Claude assistant accessible via WhatsApp, with persistent memory per conversation, scheduled tasks, and email integration.
 
+> Runtime note (2026-02-11): Swift agent orchestration now delegates to Swarm/SwiftAgents `ToolCallingAgent` with strict structured tool-call enforcement. Raw pseudo-tool blocks are not executed.
+
 ---
 
 ## Table of Contents

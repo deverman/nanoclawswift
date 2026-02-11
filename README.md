@@ -9,7 +9,7 @@
 
 ## Overview
 
-**NanoClawSwift** is a complete rewrite of NanoClaw in Swift, built with the SwiftAgents framework (sourced from the renamed `Swarm` repository, pinned to `0.3.1`). It maintains the same security-by-isolation philosophy while adding model agnosticism, better performance, and modern Swift concurrency.
+**NanoClawSwift** is a complete rewrite of NanoClaw in Swift, built with the SwiftAgents framework (from the renamed `Swarm` repository). It maintains the same security-by-isolation philosophy while adding model agnosticism, better performance, and modern Swift concurrency.
 
 ### Key Improvements
 
@@ -38,6 +38,43 @@ export MOONSHOT_API_KEY="your-kimi-api-key"
 echo '{"prompt":"What is 2+2?"}' | ./.build/release/nanoclaw-agent --group-folder test --chat-jid test@g.us
 ```
 
+## Mac Mini Bring-Up (Telegram First)
+
+```bash
+# 1) Clone and enter repo
+git clone https://github.com/deverman/nanoclawswift.git
+cd nanoclawswift
+git checkout swift-agent
+
+# 2) Use Node 24.6.0
+export NVM_DIR="$HOME/.nvm"
+source "$NVM_DIR/nvm.sh"
+nvm use 24.6.0
+export PATH="$NVM_DIR/versions/node/v24.6.0/bin:$PATH"
+
+# 3) Install dependencies
+npm ci
+
+# 4) Build/verify Swift runtime
+swift test
+./container/build-swift.sh slim
+
+# 5) Export required env vars
+export MOONSHOT_API_KEY="sk-..."
+export TELEGRAM_BOT_TOKEN="..."
+export TELEGRAM_OWNER_ID="..."
+export MODEL_PROVIDER="kimi"
+export MODEL_NAME="kimi-k2.5"
+export CONTAINER_LLM_RELAY_MODE="auto"
+
+# 6) Start app (Telegram-only mode)
+WHATSAPP_ENABLED=0 npm run dev
+```
+
+Troubleshooting:
+- If you see `EADDRINUSE ... 0.0.0.0:18081`, another stale dev process is holding relay port 18081; stop it, then restart `npm run dev`.
+- If Kimi returns `invalid temperature: only 1 is allowed for this model`, rebuild the image (`./container/build-swift.sh slim`) and restart; provider now forces compatible temperature for Kimi.
+
 ## Architecture
 
 ```
@@ -58,7 +95,7 @@ echo '{"prompt":"What is 2+2?"}' | ./.build/release/nanoclaw-agent --group-folde
 │  │                                                                   │  │
 │  │  ┌─────────────────────────────────────────────────────────────┐ │  │
 │  │  │ NanoClawAgent (SwiftAgents Framework)                       │ │  │
-│  │  │ ├─ ReAct Agent Loop with tool calling                       │ │  │
+│  │  │ ├─ ToolCallingAgent (native structured tool calls)          │ │  │
 │  │  │ ├─ FileSystem, Bash, IPC, WebFetch/WebSearch Tools          │ │  │
 │  │  │ ├─ CLAUDEMemory (CLAUDE.md context)                         │ │  │
 │  │  │ └─ FileBasedSession (JSON persistence)                      │ │  │
@@ -149,9 +186,15 @@ Use `config-examples/web-policy.global.json` as a template.
 - **Bash execution** - Commands run inside container, not on host
 - **Web tools** - `web_fetch` / `web_search` via host broker (works with Tailscale exit-node routing)
 - **Group-scoped web policy** - Container can directly manage per-group overlay allowlist
+- **Strict tool-call policy** - Raw ````tool ...```` text blocks are never executed
 - **IPC communication** - Send WhatsApp messages, schedule tasks
 - **Session persistence** - Conversation history in JSON files
 - **Conversation archiving** - Automatic transcript saving
+
+## Swarm Version Note
+
+This repo currently pins `Swarm` to `0.3.1` for build stability.  
+`0.3.4` introduces a transitive `Hive` dependency path that is not consumable in this environment (`/Package.swift` resolution failure), so migration work targets Swarm-native APIs while staying on the stable pin.
 
 ## Project Structure
 
@@ -207,6 +250,16 @@ container run -i --rm \
   --group-folder /workspace/group \
   --chat-jid test@g.us
 ```
+
+## Telegram E2E Smoke
+
+After `WHATSAPP_ENABLED=0 npm run dev`:
+1. DM the bot: `what tools do you have?`
+2. DM: `what is scheduled?`
+3. DM: `schedule a recurring 08:00 test task`
+4. DM: `list tasks`
+5. DM: `cancel task <id>`
+6. DM: `list tasks`
 
 ## Production Readiness
 

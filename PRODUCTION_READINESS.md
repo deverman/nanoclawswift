@@ -95,6 +95,23 @@
 - Verify freshness via `container image inspect nanoclawswift-agent:slim` and rerun Telegram E2E.
 - **Prevention:** Maintain a pre-pulled local cache of large builder images before travel/limited-connectivity windows.
 
+### 12. Kimi Temperature Constraint (HTTP 400)
+**Issue:** Some Kimi models reject non-`1` temperature with `invalid temperature: only 1 is allowed for this model`  
+**Impact:** Agent returns upstream 400 instead of response  
+**Mitigation:**
+- `OpenAICompatibleProvider` now normalizes Kimi/Moonshot requests to `temperature=1.0`
+- Rebuild and redeploy container image after this change
+- **Prevention:** Keep provider-specific request normalization tests and verify model-compat constraints on upgrade
+
+### 13. Relay Port Conflict (`EADDRINUSE` on `:18081`)
+**Issue:** Stale local `npm run dev` process can keep relay port `18081` bound  
+**Impact:** Relay startup fails; container falls back to direct egress and may hit DNS/network errors  
+**Mitigation:**
+- Detect via logs: `Failed to start LLM relay ... EADDRINUSE`
+- Identify stale listener (`lsof -nP -iTCP:18081 -sTCP:LISTEN`) and stop it
+- Restart app cleanly
+- **Prevention:** Ensure old dev sessions are terminated before restart
+
 ---
 
 ## Monitoring CI/CD via GitHub CLI
@@ -208,7 +225,7 @@ npm run dev
 ### Code Quality
 - [x] Swift 6.2.3 runtime validated on macOS 26 CI host
 - [x] All compiler warnings resolved
-- [x] Swift test suite passing (11 tests: CLI, config, tools, session, tool-call integration, web policy tool coverage)
+- [x] Swift test suite passing (13 tests: CLI, config, tools, session, tool-call integration, pseudo-tool rejection, schedule/cancel IPC persistence, web policy tool coverage)
 - [ ] Comprehensive test suite (>80% coverage)
 - [ ] Integration tests with mock LLM
 - [ ] Error handling audit (all throws documented)
@@ -263,7 +280,7 @@ npm run dev
 - [ ] Container image publishing
 - [ ] Automated security scanning
 - [ ] Performance benchmarking
-- [ ] Confirm runtime image is rebuilt from current source commit and validated in Telegram E2E
+- [x] Confirm runtime image is rebuilt from current source commit and validated in Telegram E2E
 
 ---
 
@@ -322,13 +339,11 @@ See migration notes in this repository for detailed migration guidance from Node
 
 ## Next Steps
 
-1. Complete blocked builder pull: `container image pull docker.io/library/swift:6.2.3`
-2. Rebuild runtime image: `container build -f container/Dockerfile.slim -t nanoclawswift-agent:slim .`
-3. Run Telegram E2E with rebuilt image (`WHATSAPP_ENABLED=0 npm run dev`)
-4. Add comprehensive test suite
-5. Set up API key in GitHub Secrets
-6. Run integration tests
-7. Create monitoring/alerting
-8. Performance testing
-9. Security audit
-10. Documentation updates
+1. Run Mac mini bring-up checklist from `README.md`
+2. Add comprehensive test suite coverage
+3. Set up API key in GitHub Secrets
+4. Run integration tests
+5. Create monitoring/alerting
+6. Performance testing
+7. Security audit
+8. Documentation updates

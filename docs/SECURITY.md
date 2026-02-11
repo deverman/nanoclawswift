@@ -99,6 +99,16 @@ Effective policy = `global allow + group allow`, with deny rules and hard-deny h
 
 Tradeoff: Bash remains unrestricted by design, so policy is best-effort for web tools rather than a strict network egress control.
 
+### 7. Structured Tool-Call Enforcement
+
+Agent execution uses Swarm's native structured tool-calling flow (`ToolCallingAgent`).
+
+- Tools execute only when returned in structured `tool_calls`.
+- Raw pseudo-tool markdown/code blocks (for example ````tool ...````) are treated as invalid output.
+- Invalid tool-block output is blocked by output guardrails and converted into a safe retry message.
+
+This reduces prompt-based tool spoofing risk compared to text-parsed tool execution.
+
 ## Privilege Comparison
 
 | Capability | Main Group | Non-Main Group |

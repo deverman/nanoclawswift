@@ -6,6 +6,13 @@
 **CLI**: `container` 0.9.0  
 **Host**: macOS 26.x
 
+## Agent Runtime Migration Status (2026-02-11)
+
+- `NanoClawAgent` now uses Swarm `ToolCallingAgent` as the single tool execution loop.
+- Raw pseudo-tool blocks (for example ````tool ...````) are rejected by guardrails and never executed.
+- `ArchivingHooks` remains as compatibility run-hook persistence for `.nanoclaw/archive`.
+- Swarm `0.3.4` was evaluated but is currently blocked in this environment by an upstream transitive `Hive` package resolution failure (`/Package.swift` missing). Repo stays pinned to `0.3.1` until upstream fix.
+
 ## What Was Verified
 
 ### 1. Core runtime works
