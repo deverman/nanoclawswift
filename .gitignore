@@ -8,6 +8,8 @@ dist/
 store/
 data/
 logs/
+groups/*/logs/
+groups/*/.nanoclaw/
 
 # Secrets
 *.keys.json
@@ -30,3 +32,8 @@ Packages/
 
 # Container build staging (avoid committing)
 container/bin/
+
+# Local scratch artifacts
+/1
+groups/telegram-direct/
+groups/test-swift/

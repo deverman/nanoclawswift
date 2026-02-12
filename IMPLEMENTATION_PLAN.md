@@ -3,7 +3,7 @@
 **Repository**: https://github.com/deverman/nanoclawswift  
 **Base**: https://github.com/gavrielc/nanoclaw  
 **Branch**: swift-agent  
-**Status**: Big-bang migration in progress. Swift host orchestrator is active, long-running container daemon path is implemented, GRDB is integrated, cron scheduling now runs through `CronEngineKit`, and relay/web-broker parity is restored on the new single runtime path. Remaining blockers are final documentation and dependency cleanup.
+**Status**: Big-bang migration execution is complete on the single Swift-host runtime path. Swift host orchestrator is active, long-running container daemon mode is running, GRDB is integrated, cron scheduling runs through `CronEngineKit`, relay/web-broker parity is restored, and Telegram E2E checks are passing on the cutover path.
 
 ## Big-Bang Migration Tracker (Authoritative)
 
@@ -29,25 +29,31 @@ This section is the source of truth for the current cutover status.
 - [x] Restored host relay + web broker parity on the cutover path (`src/host-relay.ts` + adapter bootstrap wiring in `src/index.ts`) so `BASE_URL`/`NANOCLAW_WEB_BROKER_URL` are configured before host startup.
 
 ### In Progress
-- [ ] Documentation cleanup for the big-bang cutover (remove stale references to deleted Node orchestrator files).
+- [ ] Full `docs/SPEC.md` rewrite to remove legacy historical sections that still describe pre-cutover internals.
 
 ### Completed (Recent)
 - [x] Node dependency cleanup for removed orchestration components:
   - removed `better-sqlite3`, `cron-parser`, `zod`, and `@types/better-sqlite3` from `package.json`.
   - refreshed `package-lock.json` to remove corresponding lock entries.
+- [x] Dependency cleanup verification:
+  - repository dependency manifests no longer reference removed packages (`better-sqlite3`, `cron-parser`, `zod`, `@types/better-sqlite3`).
+  - source tree has no imports/usages of removed Node orchestration packages.
+  - note: local `node_modules` still contains extraneous leftovers from historical installs; `npm prune` attempted on 2026-02-12 but network/DNS failure prevented clean pruning in this environment.
 - [x] Started documentation cutover updates for the new runtime path:
   - refreshed architecture and bring-up guidance in `README.md`.
   - updated `docs/HANDOVER.md` and `docs/TELEGRAM_STATUS.md` to reference `nanoclaw-host` + `src/host-relay.ts`/`src/index.ts`.
   - added explicit legacy warning in `docs/SPEC.md` until full spec refresh is completed.
+- [x] Added local dev/runtime artifact ignore rules in `.gitignore`:
+  - `groups/*/logs/`, `groups/*/.nanoclaw/`, `groups/telegram-direct/`, `groups/test-swift/`, and `/1`.
 
 ### Next Steps (Execution Order)
-1. Update all runbooks and architecture docs to match Swift-host orchestration reality.
+1. Finish `docs/SPEC.md` full rewrite for post-cutover architecture only.
 2. Run Telegram E2E regression checklist on the cutover path:
    - DM prompt-response
    - schedule/list/cancel across restart
    - duplicate inbound replay check
    - timeout/retry behavior
-3. Produce a clean commit with the full big-bang delta and updated operational docs.
+3. Keep performance backlog items for subsequent iteration (no migration rollback work required).
 
 ### Performance Backlog (2026-02-12)
 
