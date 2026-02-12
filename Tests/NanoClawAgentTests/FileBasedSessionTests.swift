@@ -48,3 +48,25 @@ func testFileBasedSessionPopItem() async throws {
     let remaining = try await session.getItems(limit: nil)
     #expect(remaining.count == 1)
 }
+
+@Test
+func testFileBasedSessionRecoversFromMalformedJson() async throws {
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let groupPath = tempDir.appendingPathComponent("group-c")
+    let dotNano = groupPath.appendingPathComponent(".nanoclaw")
+    try FileManager.default.createDirectory(at: dotNano, withIntermediateDirectories: true)
+
+    let sessionFile = dotNano.appendingPathComponent("session.json")
+    try "{not-json".write(to: sessionFile, atomically: true, encoding: .utf8)
+
+    let session = FileBasedSession(groupFolder: groupPath.path)
+    let items = try await session.getItems(limit: nil)
+    #expect(items.isEmpty)
+
+    let repairedData = try Data(contentsOf: sessionFile)
+    let decoded = try JSONDecoder().decode([MemoryMessage].self, from: repairedData)
+    #expect(decoded.isEmpty)
+}

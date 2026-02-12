@@ -3,6 +3,8 @@
 A personal Claude assistant accessible via WhatsApp, with persistent memory per conversation, scheduled tasks, and email integration.
 
 > Runtime note (2026-02-11): Swift agent orchestration now delegates to Swarm/SwiftAgents `ToolCallingAgent` with strict structured tool-call enforcement. Raw pseudo-tool blocks are not executed.
+>
+> Architecture note (2026-02-12): this spec still contains legacy Node-orchestrator details in several sections. Current runtime is Swift-host-first (`nanoclaw-host`) with Node used as channel adapters only. Use `/Users/deverman/Documents/Code/nanoclawswift/README.md` and `/Users/deverman/Documents/Code/nanoclawswift/IMPLEMENTATION_PLAN.md` as source of truth until this spec is fully refreshed.
 
 ---
 
@@ -25,69 +27,57 @@ A personal Claude assistant accessible via WhatsApp, with persistent memory per 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        HOST (macOS)                                  │
-│                   (Main Node.js Process)                             │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌──────────────┐                     ┌────────────────────┐        │
-│  │  WhatsApp    │────────────────────▶│   SQLite Database  │        │
-│  │  (baileys)   │◀────────────────────│   (messages.db)    │        │
-│  └──────────────┘   store/send        └─────────┬──────────┘        │
-│                                                  │                   │
-│         ┌────────────────────────────────────────┘                   │
-│         │                                                            │
-│         ▼                                                            │
-│  ┌──────────────────┐    ┌──────────────────┐    ┌───────────────┐  │
-│  │  Message Loop    │    │  Scheduler Loop  │    │  IPC Watcher  │  │
-│  │  (polls SQLite)  │    │  (checks tasks)  │    │  (file-based) │  │
-│  └────────┬─────────┘    └────────┬─────────┘    └───────────────┘  │
-│           │                       │                                  │
-│           └───────────┬───────────┘                                  │
-│                       │ spawns container                             │
-│                       ▼                                              │
-├─────────────────────────────────────────────────────────────────────┤
-│                  APPLE CONTAINER (Linux VM)                          │
-├─────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                    AGENT RUNNER                               │   │
-│  │                                                                │   │
-│  │  Working directory: /workspace/group (mounted from host)       │   │
-│  │  Volume mounts:                                                │   │
-│  │    • groups/{name}/ → /workspace/group                         │   │
-│  │    • groups/global/ → /workspace/global/ (non-main only)        │   │
-│  │    • data/sessions/{group}/.claude/ → /home/node/.claude/      │   │
-│  │    • Additional dirs → /workspace/extra/*                      │   │
-│  │                                                                │   │
-│  │  Tools (all groups):                                           │   │
-│  │    • Bash (safe - sandboxed in container!)                     │   │
-│  │    • Read, Write, Edit, Glob, Grep (file operations)           │   │
-│  │    • WebSearch, WebFetch (internet access)                     │   │
-│  │    • agent-browser (browser automation)                        │   │
-│  │    • mcp__nanoclaw__* (scheduler tools via IPC)                │   │
-│  │                                                                │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           HOST (macOS)                                  │
+│  ┌──────────────────────┐    Unix socket HTTP     ┌──────────────────┐ │
+│  │ Node channel adapters │  ───────────────────▶   │ Swift host        │ │
+│  │ Telegram + WhatsApp   │                         │ (nanoclaw-host)   │ │
+│  │ outbound claim/ack    │  ◀───────────────────   │ queue/scheduler/DB│ │
+│  └──────────────────────┘                          └────────┬─────────┘ │
+│                                                              │           │
+│                                      mounted IPC files       │           │
+│                                      (request/response)      ▼           │
+├─────────────────────────────────────────────────────────────────────────┤
+│                      APPLE CONTAINER (Linux VM)                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                    nanoclaw-agent (Swift Binary)                  │  │
+│  │                                                                   │  │
+│  │  ┌─────────────────────────────────────────────────────────────┐ │  │
+│  │  │ NanoClawAgent (ToolCallingAgent runtime)                    │ │  │
+│  │  │ ├─ structured tool-call execution only                      │ │  │
+│  │  │ ├─ file, bash, IPC, web tools                               │ │  │
+│  │  │ ├─ CLAUDEMemory + per-group session state                   │ │  │
+│  │  │ └─ daemon mode processing mounted IPC requests              │ │  │
+│  │  └─────────────────────────────────────────────────────────────┘ │  │
+│  │                                                                   │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  Mounts:                                                                │
+│    • groups/{group}/ → /workspace/group                                 │
+│    • store/runtime/{group}/ipc → /workspace/ipc                         │
+│    • store/sessions/{group}/.claude → /home/nanoclaw/.claude            │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Technology Stack
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| WhatsApp Connection | Node.js (@whiskeysockets/baileys) | Connect to WhatsApp, send/receive messages |
-| Message Storage | SQLite (better-sqlite3) | Store messages for polling |
-| Container Runtime | Apple Container | Isolated Linux VMs for agent execution |
-| Agent | @anthropic-ai/claude-agent-sdk (0.2.29) | Run Claude with tools and MCP servers |
-| Browser Automation | agent-browser + Chromium | Web interaction and screenshots |
-| Runtime | Node.js 20+ | Host process for routing and scheduling |
+| Channel adapters | Node.js (`grammy`, `@whiskeysockets/baileys`) | Telegram/WhatsApp protocol I/O and outbound delivery |
+| Host orchestrator | Swift (`nanoclaw-host`) | Group queueing, scheduling, state, container lifecycle |
+| State storage | SQLite (`GRDB`) | Inbound dedupe, sessions, outbound queue, scheduled tasks |
+| Container runtime | Apple Container 0.9.x | Isolated Linux execution for per-group agent daemon |
+| Agent runtime | Swarm / SwiftAgents (`ToolCallingAgent`) | Structured tool-calling loop, guardrails, provider inference |
+| Relay + web broker | Node.js (`src/host-relay.ts`) | Provider relay + policy-enforced web fetch/search endpoints |
+| Cron scheduling | `CronEngineKit` + `SwiftCronParser` | Timezone-aware next-run computation for recurring tasks |
 
 ---
 
 ## Folder Structure
 
 ```
-nanoclaw/
+nanoclawswift/
 ├── CLAUDE.md                      # Project context for Claude Code
 ├── docs/
 │   ├── SPEC.md                    # This specification document
@@ -100,26 +90,32 @@ nanoclaw/
 ├── .gitignore
 │
 ├── src/
-│   ├── index.ts                   # Main application (WhatsApp + routing)
-│   ├── config.ts                  # Configuration constants
-│   ├── types.ts                   # TypeScript interfaces
-│   ├── utils.ts                   # Generic utility functions
-│   ├── db.ts                      # Database initialization and queries
+│   ├── index.ts                   # Node adapter bootstrap (starts relay + Swift host)
+│   ├── config.ts                  # Adapter + relay configuration
+│   ├── host-client.ts             # Unix socket client for nanoclaw-host API
+│   ├── host-relay.ts              # Provider relay + web broker endpoints
+│   ├── telegram-bot.ts            # Telegram adapter
 │   ├── whatsapp-auth.ts           # Standalone WhatsApp authentication
-│   ├── task-scheduler.ts          # Runs scheduled tasks when due
-│   └── container-runner.ts        # Spawns agents in Apple Containers
+│   └── (no Node orchestrator state machine or scheduler)
+│
+├── Sources/
+│   ├── NanoClawHost/              # Swift host orchestrator runtime
+│   │   ├── NanoClawHostService.swift
+│   │   ├── ContainerSessionManager.swift
+│   │   ├── GroupQueue.swift
+│   │   └── SQLiteStore.swift
+│   ├── NanoClawAgent/             # Swift container agent runtime
+│   │   ├── NanoClawAgentCLI.swift
+│   │   ├── NanoClawAgent.swift
+│   │   ├── Tools/
+│   │   ├── Providers/
+│   │   └── Memory/
+│   ├── CronEngineKit/             # Cron abstraction + parser adapter
+│   └── SessionSummaryCLI/         # Log/session summary CLI
 │
 ├── container/
-│   ├── Dockerfile                 # Container image (runs as 'node' user, includes Claude Code CLI)
-│   ├── build.sh                   # Build script for container image
-│   ├── agent-runner/              # Code that runs inside the container
-│   │   ├── package.json
-│   │   ├── tsconfig.json
-│   │   └── src/
-│   │       ├── index.ts           # Entry point (reads JSON, runs agent)
-│   │       └── ipc-mcp.ts         # MCP server for host communication
-│   └── skills/
-│       └── agent-browser.md       # Browser automation skill
+│   ├── Dockerfile.slim            # Runtime image for nanoclaw-agent
+│   └── build-swift.sh             # Builds Linux Swift binary + image
 │
 ├── dist/                          # Compiled JavaScript (gitignored)
 │
@@ -144,19 +140,18 @@ nanoclaw/
 │
 ├── store/                         # Local data (gitignored)
 │   ├── auth/                      # WhatsApp authentication state
-│   └── messages.db                # SQLite database (messages, scheduled_tasks, task_run_logs)
+│   ├── messages.db                # Swift host SQLite database
+│   ├── runtime/{group}/ipc/       # Host↔container request/response + tool IPC files
+│   └── sessions/{group}/.claude/  # Mounted per-group Claude state
 │
 ├── data/                          # Application state (gitignored)
-│   ├── sessions.json              # Active session IDs per group
-│   ├── registered_groups.json     # Group JID → folder mapping
-│   ├── router_state.json          # Last processed timestamp + last agent timestamps
-│   ├── env/env                    # Copy of .env for container mounting
-│   └── ipc/                       # Container IPC (messages/, tasks/)
+│   ├── registered_groups.json     # Legacy migration input (migrated into SQLite)
+│   └── env/                       # Optional env artifacts
 │
 ├── logs/                          # Runtime logs (gitignored)
-│   ├── nanoclaw.log               # Host stdout
-│   └── nanoclaw.error.log         # Host stderr
-│   # Note: Per-container logs are in groups/{folder}/logs/container-*.log
+│   ├── nanoclaw.log               # Adapter stdout
+│   └── nanoclaw.error.log         # Adapter stderr
+│   # Per-group daemon logs are in groups/{folder}/logs/daemon-*.log
 │
 └── launchd/
     └── com.nanoclaw.plist         # macOS service configuration

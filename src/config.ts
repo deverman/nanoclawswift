@@ -4,6 +4,11 @@ export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'Andy';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 export const WHATSAPP_ENABLED = process.env.WHATSAPP_ENABLED !== '0';
+export const HOST_SOCKET_PATH = process.env.NANOCLAW_HOST_SOCKET || '/tmp/nanoclaw-host.sock';
+export const HOST_REQUEST_TIMEOUT_MS = parseInt(process.env.NANOCLAW_HOST_REQUEST_TIMEOUT_MS || '15000', 10);
+export const HOST_OUTBOUND_POLL_INTERVAL_MS = parseInt(process.env.HOST_OUTBOUND_POLL_INTERVAL_MS || '1000', 10);
+export const HOST_AUTOSTART = process.env.NANOCLAW_HOST_AUTOSTART !== '0';
+export const HOST_STARTUP_TIMEOUT_MS = parseInt(process.env.NANOCLAW_HOST_STARTUP_TIMEOUT_MS || '45000', 10);
 
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();

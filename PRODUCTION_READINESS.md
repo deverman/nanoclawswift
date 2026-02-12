@@ -156,7 +156,7 @@ Create `/workspace/config.json`:
   "api_key": "your-api-key-here",
   "model_provider": "kimi",
   "model_name": "kimi-k2.5",
-  "timeout": 60
+  "timeout": 180
 }
 ```
 
@@ -242,19 +242,21 @@ npm run dev
 
 ### Performance
 - [x] Async/await for I/O operations
-- [x] Relay-side connection reuse via keep-alive agents in `src/container-runner.ts`
+- [x] Relay-side connection reuse via keep-alive agents in `src/host-relay.ts`
+- [x] Host-side delayed working acknowledgment for long-running requests (`NANOCLAW_WORKING_ACK_*`)
+- [x] Rolling latency metrics + SLO warning thresholds in `nanoclaw-host` health/logs
 - [ ] Provider-side connection pooling/circuit breaking policy hardening
 - [ ] Response caching for repeated prompts
-- [ ] Timeout handling (60s default)
+- [x] Timeout handling (default 180s agent runtime + host/container timeouts)
 - [ ] Circuit breaker for LLM failures
 - [ ] Rate limiting compliance
 
 ### Observability
-- [ ] Structured logging (not just print)
+- [x] Structured logging (Node + Swift host lifecycle logs)
 - [ ] Metrics collection (Prometheus)
 - [ ] Distributed tracing (OpenTelemetry)
-- [ ] Health check endpoint
-- [ ] Alerting for failures
+- [x] Health check endpoint (`/v1/health`)
+- [x] Alerting for failures (SLO warning logs; external alert pipeline still pending)
 
 ### Reliability
 - [x] Session persistence (JSON files)

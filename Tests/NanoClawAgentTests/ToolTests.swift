@@ -98,6 +98,18 @@ func testGlobAndGrep() async throws {
 }
 
 @Test
+func testGlobRejectsEmptyPattern() async throws {
+    let glob = GlobTool()
+    var didThrow = false
+    do {
+        _ = try await glob.execute(arguments: ["pattern": .string("   ")])
+    } catch {
+        didThrow = true
+    }
+    #expect(didThrow)
+}
+
+@Test
 func testWebPolicyOverlayTools() async throws {
     let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)

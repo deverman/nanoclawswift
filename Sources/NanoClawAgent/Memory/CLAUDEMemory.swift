@@ -186,7 +186,7 @@ public actor CLAUDEMemory: Memory {
     ///
     /// - Throws: `MemoryError.saveFailed` if writing fails.
     public func saveClaudeMd() async throws {
-        let claudeMdPath = "/workspace/group/\(groupFolder)/CLAUDE.md"
+        let claudeMdPath = Self.resolveGroupPath(groupFolder: groupFolder) + "/CLAUDE.md"
         let url = URL(fileURLWithPath: claudeMdPath)
         
         do {
@@ -200,7 +200,7 @@ public actor CLAUDEMemory: Memory {
     
     /// Loads the CLAUDE.md file from the group folder.
     private static func loadClaudeMd(groupFolder: String) async -> String {
-        let claudeMdPath = "/workspace/group/\(groupFolder)/CLAUDE.md"
+        let claudeMdPath = resolveGroupPath(groupFolder: groupFolder) + "/CLAUDE.md"
         let fileManager = FileManager.default
         
         guard fileManager.fileExists(atPath: claudeMdPath) else {
@@ -221,6 +221,18 @@ public actor CLAUDEMemory: Memory {
     private func estimateTokens(_ text: String) -> Int {
         // Rough estimate: 1 token ≈ 4 characters for English text
         return text.count / 4
+    }
+
+    private static func resolveGroupPath(groupFolder: String) -> String {
+        if groupFolder.hasPrefix("/") {
+            return groupFolder
+        }
+        let basePath = ProcessInfo.processInfo.environment["NANOCLAW_BASE_PATH"] ?? "/workspace/group"
+        let isolatedGroupMount = ProcessInfo.processInfo.environment["NANOCLAW_GROUP_ISOLATED_MOUNT"] == "1"
+        if isolatedGroupMount {
+            return basePath
+        }
+        return "\(basePath)/\(groupFolder)"
     }
 }
 

@@ -15,7 +15,7 @@ public struct NanoClawConfig: Codable, Sendable {
         provider: ModelProvider = .kimi,
         model: ModelName? = nil,
         baseURL: String? = nil,
-        timeout: Int = 60,
+        timeout: Int = 180,
         maxTokens: Int? = nil,
         assistantName: String? = nil
     ) {

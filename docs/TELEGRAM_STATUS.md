@@ -21,7 +21,7 @@ Container runtime is not globally broken:
 The previously observed local image metadata/content-store mismatch was mitigated.
 
 - `container image ls` succeeds on current host state.
-- Runtime preflight in `container-runner.ts` now checks configured image availability and warns with digest-recovery steps if metadata drift appears again.
+- Startup now uses Swift host session management (`Sources/NanoClawHost/ContainerSessionManager.swift`) with stale-container cleanup on boot and per-group daemon logs.
 
 ### Tailscale + Container Networking Findings
 
@@ -33,13 +33,14 @@ Observed on this host:
 
 Mitigation now implemented in runtime:
 
-- `src/container-runner.ts` detects default-route-on-`utun` and (in relay mode `auto`) rewrites container `BASE_URL` to a host relay endpoint on `192.168.64.1`.
+- `src/index.ts` boots `src/host-relay.ts`, reports default-route interface, and configures relay/web-broker environment for `nanoclaw-host` before host startup.
+- `nanoclaw-host` passes `BASE_URL`/`NANOCLAW_WEB_BROKER_URL` into long-running container sessions.
 - Relay DNS resolution uses explicit resolvers (`1.1.1.1,8.8.8.8` by default) to avoid split-DNS surprises from tunnel-scoped resolvers.
 - If upstream returns non-200, relay returns a JSON completion-shaped fallback so the Swift agent does not crash in provider error paths.
 
 Relevant env knobs:
 
-- `CONTAINER_LLM_RELAY_MODE=auto|force|off` (default: `auto`, applies automatically when default route is `utun*` and no explicit `BASE_URL` is set)
+- `CONTAINER_LLM_RELAY_MODE=auto|force|off` (default: `auto`; `BASE_URL` is set to relay when unset, or always in `force`)
 - `CONTAINER_LLM_RELAY_DNS_SERVERS=1.1.1.1,8.8.8.8`
 - `CONTAINER_LLM_RELAY_HOST=192.168.64.1`
 - `CONTAINER_LLM_RELAY_PORT=18081`
@@ -50,7 +51,7 @@ Relevant env knobs:
 1. Verify model/provider env values are present for the host process.
 2. Verify container image exists and runs directly with a minimal prompt.
 3. Verify per-group mounts and IPC directories are created and writable.
-4. Inspect `groups/telegram-direct/logs/container-*.log` for agent stderr and parsed output markers.
+4. Inspect `groups/telegram-direct/logs/daemon-*.log` for long-running container agent stderr/output.
 5. Run `npm run container:smoke` when suspecting container runtime regressions.
 6. Run `npm run container:netcheck` to confirm route/DNS/egress behavior under VPN/Tailscale.
 7. If Tailscale exit-node mode is enabled, verify app setting "Allow LAN access" and/or disable exit node for direct container egress tests.

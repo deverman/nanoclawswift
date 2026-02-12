@@ -27,3 +27,15 @@ func testConfigLoaderRespectsModelOverride() async throws {
         #expect(config.model == .gpt4o)
     }
 }
+
+@Test
+func testConfigLoaderUsesLongerDefaultTimeoutWhenUnset() async throws {
+    try await TestEnvironmentLock.shared.withEnvs([
+        "OPENAI_API_KEY": "test-openai-key",
+        "MODEL_PROVIDER": "openai",
+        "TIMEOUT": nil
+    ]) {
+        let config = try await ConfigLoader.load(from: "/tmp/nonexistent.json")
+        #expect(config.timeout == 180)
+    }
+}

@@ -3,7 +3,94 @@
 **Repository**: https://github.com/deverman/nanoclawswift  
 **Base**: https://github.com/gavrielc/nanoclaw  
 **Branch**: swift-agent  
-**Status**: Validation Mode - Core runtime stable on container 0.9.0, test suites green, Tailscale-aware relay + web broker implemented, group-scoped web policy overlays active, and Telegram E2E schedule/list/cancel flows validated.
+**Status**: Big-bang migration in progress. Swift host orchestrator is active, long-running container daemon path is implemented, GRDB is integrated, cron scheduling now runs through `CronEngineKit`, and relay/web-broker parity is restored on the new single runtime path. Remaining blockers are final documentation and dependency cleanup.
+
+## Big-Bang Migration Tracker (Authoritative)
+
+This section is the source of truth for the current cutover status.
+
+### Completed
+- [x] Added Swift host runtime (`nanoclaw-host`) with Unix socket API:
+  - `POST /v1/events/inbound`
+  - `POST /v1/outbound/claim`
+  - `POST /v1/outbound/ack`
+  - `GET /v1/health`
+- [x] Implemented Swift `GroupQueue` with one worker per group and global concurrency cap.
+- [x] Implemented long-running container sessions via `ContainerSessionManager`.
+- [x] Added container daemon mode in `NanoClawAgentCLI` (`--daemon`) with mounted IPC request/response protocol.
+- [x] Cut Node runtime to channel adapters + host client (`src/host-client.ts`).
+- [x] Moved host state to Swift + SQLite (GRDB) in `Sources/NanoClawHost/SQLiteStore.swift`.
+- [x] Added inbound dedupe (`channel + chat_jid + message_id`) to prevent reconnect duplicate replies.
+- [x] Added outbound claim lease recovery to avoid stuck claimed messages.
+- [x] Added new test suites:
+  - `Tests/NanoClawHostTests/*`
+  - `Tests/CronEngineKitTests/*`
+- [x] Added standalone cron package-style library target `CronEngineKit` and wired host scheduler to it.
+- [x] Restored host relay + web broker parity on the cutover path (`src/host-relay.ts` + adapter bootstrap wiring in `src/index.ts`) so `BASE_URL`/`NANOCLAW_WEB_BROKER_URL` are configured before host startup.
+
+### In Progress
+- [ ] Documentation cleanup for the big-bang cutover (remove stale references to deleted Node orchestrator files).
+
+### Completed (Recent)
+- [x] Node dependency cleanup for removed orchestration components:
+  - removed `better-sqlite3`, `cron-parser`, `zod`, and `@types/better-sqlite3` from `package.json`.
+  - refreshed `package-lock.json` to remove corresponding lock entries.
+- [x] Started documentation cutover updates for the new runtime path:
+  - refreshed architecture and bring-up guidance in `README.md`.
+  - updated `docs/HANDOVER.md` and `docs/TELEGRAM_STATUS.md` to reference `nanoclaw-host` + `src/host-relay.ts`/`src/index.ts`.
+  - added explicit legacy warning in `docs/SPEC.md` until full spec refresh is completed.
+
+### Next Steps (Execution Order)
+1. Update all runbooks and architecture docs to match Swift-host orchestration reality.
+2. Run Telegram E2E regression checklist on the cutover path:
+   - DM prompt-response
+   - schedule/list/cancel across restart
+   - duplicate inbound replay check
+   - timeout/retry behavior
+3. Produce a clean commit with the full big-bang delta and updated operational docs.
+
+### Performance Backlog (2026-02-12)
+
+Observed timings for prompt `what is the latest vision pro?`:
+- Inbound event received at `2026-02-12T03:12:36Z` (`inbound_events.message_id=227`).
+- Long-running container session started at `11:12:36` local (same second as inbound).
+- First web-broker policy access at `11:12:43` local (`Web policy global file not found` warning indicates first web tool call).
+- Outbound response created at `2026-02-12T03:13:52Z`.
+- End-to-end latency was ~76 seconds.
+
+Interpretation:
+- Primary previous failure cause (fixed): agent default timeout was 60 seconds when `TIMEOUT` env was unset.
+- Current latency bottleneck is not a hard timeout; it is mostly run-time latency from cold session startup + multi-step tool/LLM turn for web retrieval and synthesis.
+
+Backlog items:
+- [x] Add per-stage latency instrumentation and persistence (host logs now emit queue wait + stage durations):
+  - queue wait
+  - container warm/cold start time
+  - each tool call duration
+  - each provider inference duration
+  - final render/send duration
+- [x] Add structured host logs for request lifecycle with `request_id` correlation across:
+  - inbound event
+  - queue dequeue
+  - container dispatch
+  - tool execution
+  - outbound enqueue
+- [x] Optimize web tool payload size before model synthesis:
+  - default HTML-to-text extraction
+  - cap and summarize tool outputs before passing full page content to the model
+  - targeted extraction of title/meta/headings/paragraphs for web pages
+- [x] Add warm-session policy for active groups:
+  - proactively start/keep alive most active groups on host boot (`NANOCLAW_PREWARM_GROUP_SESSIONS`, `NANOCLAW_PREWARM_LIMIT`)
+  - avoid first-message cold start penalty (verified in startup logs for `telegram-direct`)
+- [x] Add latency SLO and alert thresholds:
+  - host health now exposes `response_p50_ms`, `response_p95_ms`, `timeout_rate`, `retry_rate`, and `completed_jobs`
+  - host emits periodic SLO warning logs when thresholds are breached (`NANOCLAW_LATENCY_SLO_P50_MS`, `NANOCLAW_LATENCY_SLO_P95_MS`, `NANOCLAW_TIMEOUT_ALERT_RATE`, `NANOCLAW_RETRY_ALERT_RATE`)
+- [x] Add user-facing “working” ack policy when runtime exceeds threshold (for example >8s) to improve UX during long web-assisted runs.
+  - host now enqueues delayed ack after `NANOCLAW_WORKING_ACK_THRESHOLD_MS` (default `8000`) with `NANOCLAW_WORKING_ACK_ENABLED` control
+- [ ] Rewrite web payload optimization path in Swift host runtime (replace Node regex extraction with Swift-native parser utility):
+  - target: move HTML extraction/summarization from `src/host-relay.ts` into Swift host service
+  - evaluate `SwiftSoup` first; if needed, wrap parser behind a small `WebContentExtractor` protocol for future engine swap
+  - keep existing broker response contract stable (`contentFormat`, truncation flags, redirect/policy behavior)
 
 ## Current Progress
 
@@ -47,50 +134,33 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           HOST (macOS)                                  │
-│                    Node.js Orchestration (UNCHANGED)                    │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────────────────┐ │
-│  │ WhatsApp │  │Scheduler │  │  IPC     │  │  Container Spawner      │ │
-│  │ (baileys)│  │  Loop    │  │ Watcher  │  │  (container-runner.ts)  │ │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───────────┬─────────────┘ │
-│       │             │             │                    │               │
-│       └─────────────┴─────────────┴────────────────────┘               │
-│                              │                                         │
-│                              ▼                                         │
+│  ┌──────────────────────┐    Unix socket HTTP     ┌──────────────────┐ │
+│  │ Node channel adapters │  ───────────────────▶   │ Swift host        │ │
+│  │ Telegram + WhatsApp   │                         │ (nanoclaw-host)   │ │
+│  │ outbound claim/ack    │  ◀───────────────────   │ queue/scheduler/DB│ │
+│  └──────────────────────┘                          └────────┬─────────┘ │
+│                                                              │           │
+│                                      mounted IPC files       │           │
+│                                      (request/response)      ▼           │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                      APPLE CONTAINER (Linux VM)                         │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
 │  │                    nanoclaw-agent (Swift Binary)                  │  │
 │  │                                                                   │  │
 │  │  ┌─────────────────────────────────────────────────────────────┐ │  │
-│  │  │ NanoClawAgent (Agent Protocol)                              │ │  │
-│  │  │ ├─ Instructions: "You are Andy..."                           │ │  │
-│  │  │ ├─ Loop: Guard(.input) → Relay() → Guard(.output)           │ │  │
-│  │  │ ├─ Tools: [Read, Write, Edit, Bash, Glob, Grep, Web*, IPC*] │ │  │
-│  │  │ ├─ Memory: CLAUDEMemory (global + group CLAUDE.md)          │ │  │
-│  │  │ └─ Session: FileBasedSession (JSON persistence)             │ │  │
-│  │  └─────────────────────────────────────────────────────────────┘ │  │
-│  │                                                                   │  │
-│  │  ┌─────────────────────────────────────────────────────────────┐ │  │
-│  │  │ OpenAICompatibleProvider (InferenceProvider)                │ │  │
-│  │  │ ├─ Supports: Kimi, OpenAI, Anthropic (OpenAI-compatible)    │ │  │
-│  │  │ ├─ HTTP client (Foundation URLSession)                      │ │  │
-│  │  │ ├─ API key from config                                     │ │  │
-│  │  │ ├─ Retry logic with exponential backoff for 429 errors     │ │  │
-│  │  │ └─ Tool calling support                                     │ │  │
-│  │  └─────────────────────────────────────────────────────────────┘ │  │
-│  │                                                                   │  │
-│  │  ┌─────────────────────────────────────────────────────────────┐ │  │
-│  │  │ ArchivingHooks (RunHooks)                                   │ │  │
-│  │  │ └─ onAgentEnd: Archive to conversations/{date}-{summary}.md│ │  │
+│  │  │ NanoClawAgent (ToolCallingAgent runtime)                    │ │  │
+│  │  │ ├─ structured tool-call execution only                      │ │  │
+│  │  │ ├─ File, Bash, IPC, Web tools                               │ │  │
+│  │  │ ├─ CLAUDEMemory + per-group session state                   │ │  │
+│  │  │ └─ daemon mode processing mounted IPC requests              │ │  │
 │  │  └─────────────────────────────────────────────────────────────┘ │  │
 │  │                                                                   │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                                                         │
 │  Mounts:                                                                │
-│    • groups/{name}/ → /workspace/group                                  │
-│    • groups/CLAUDE.md → /workspace/group/../CLAUDE.md (global)         │
-│    • data/ipc/ → /workspace/ipc                                         │
-│    • data/sessions/{group}.json → /workspace/session.json               │
+│    • groups/{group}/ → /workspace/group                                 │
+│    • store/runtime/{group}/ipc → /workspace/ipc                         │
+│    • store/sessions/{group}/.claude → /home/nanoclaw/.claude            │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -174,7 +244,7 @@ public init(
     apiKey: String,
     baseURL: String,
     model: String,
-    timeout: Int = 60,
+    timeout: Int = 180,
     maxRetries: Int = 5,      // Configurable
     baseDelay: Double = 1.0   // Configurable
 )
@@ -264,17 +334,14 @@ echo '{"prompt":"Read the file hello.txt"}' | \
 - **Base image**: Uses `swift:6.2.3-slim` (has CA certificates pre-installed)
 
 ### ✅ FIXED - Node.js Integration
-- Updated `container-runner.ts` to spawn Swift agent with CLI args
-- Added `--dns 8.8.8.8` for DNS resolution
-- Updated runtime env passing to use `--env-file` (compatible with `-i` on container 0.9.0)
-- Changed from JSON stdin to CLI args + prompt stdin
-- Added startup preflight in `container-runner.ts`:
-  - verifies configured `CONTAINER_IMAGE` via `container image inspect`
-  - checks `container image ls` and emits actionable recovery guidance for digest metadata drift
-  - runs once per process with concurrency-safe promise caching
-- Added relay conflict diagnosis and recovery path:
-  - detect `EADDRINUSE` on relay port (`18081`) from stale local dev process
-  - recover by terminating stale process and restarting app cleanly
+- Node runtime now acts as channel adapters only (`src/index.ts`, `src/telegram-bot.ts`)
+- Swift host (`nanoclaw-host`) owns queueing, scheduling, sessions, and container lifecycle
+- Host relay/web broker (`src/host-relay.ts`) provides:
+  - provider relay path (`/relay/{provider}/v1`)
+  - web policy-enforced broker endpoints (`/web/*`)
+- Startup resilience added:
+  - relay conflict diagnosis for `EADDRINUSE` on `:18081`
+  - clear operational recovery (`lsof` + terminate stale listener + restart)
 
 ### ✅ FIXED - Kimi request compatibility
 - `OpenAICompatibleProvider` now normalizes temperature for Moonshot/Kimi requests.
@@ -311,7 +378,7 @@ echo '{"prompt":"Read the file hello.txt"}' | \
 - [x] Swift tests and tool tests passing: `swift test`
 - [x] Container runtime smoke checks: `npm run container:smoke`
 - [x] Container/VPN diagnostics: `npm run container:netcheck`
-- [x] Relay reliability improvement applied: upstream keep-alive agent reuse in `src/container-runner.ts`
+- [x] Relay reliability improvement applied in `src/host-relay.ts` with shared upstream keep-alive agents
 - [x] Documentation and handover updated for Tailscale/relay behavior and web policy architecture
 - [x] Final rebuilt-image E2E (Telegram) completed
 

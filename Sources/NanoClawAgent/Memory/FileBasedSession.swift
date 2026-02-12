@@ -64,13 +64,17 @@ public actor FileBasedSession: Session {
         self.sessionId = sessionId
         // Support both container paths (/workspace/group) and local absolute paths
         let basePath = ProcessInfo.processInfo.environment["NANOCLAW_BASE_PATH"] ?? "/workspace/group"
-        let groupPath = groupFolder.hasPrefix("/") ? groupFolder : "\(basePath)/\(groupFolder)"
-        self.sessionFilePath = "\(groupPath)/.nanoclaw/session.json"
-        
-        // Ensure directory exists
-        Task {
-            await ensureDirectoryExists()
+        let isolatedGroupMount = ProcessInfo.processInfo.environment["NANOCLAW_GROUP_ISOLATED_MOUNT"] == "1"
+        let groupPath: String
+        if groupFolder.hasPrefix("/") {
+            groupPath = groupFolder
+        } else if isolatedGroupMount {
+            // In long-running isolated group mounts, basePath already points at this group.
+            groupPath = basePath
+        } else {
+            groupPath = "\(basePath)/\(groupFolder)"
         }
+        self.sessionFilePath = "\(groupPath)/.nanoclaw/session.json"
     }
     
     /// Creates a new file-based session with a custom file path.
@@ -81,11 +85,6 @@ public actor FileBasedSession: Session {
     public init(sessionId: String = UUID().uuidString, filePath: String) {
         self.sessionId = sessionId
         self.sessionFilePath = filePath
-        
-        // Ensure directory exists
-        Task {
-            await ensureDirectoryExists()
-        }
     }
     
     /// Retrieves the item count with proper error propagation.
@@ -181,7 +180,8 @@ public actor FileBasedSession: Session {
     /// Loads items from the file system if not already in memory.
     private func loadItems() async throws {
         let path = sessionFilePath
-        
+        try ensureDirectoryExists()
+
         guard fileManager.fileExists(atPath: path) else {
             items = []
             return
@@ -189,11 +189,29 @@ public actor FileBasedSession: Session {
         
         do {
             let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            if data.isEmpty {
+                items = []
+                try await saveItems()
+                return
+            }
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            let storedItems = try decoder.decode([StoredMessage].self, from: data)
-            items = storedItems.map { $0.toMemoryMessage() }
+            do {
+                let storedItems = try decoder.decode([StoredMessage].self, from: data)
+                items = storedItems.map { $0.toMemoryMessage() }
+            } catch {
+                // Self-heal malformed/legacy session files to keep the daemon alive.
+                try backupCorruptSessionFile(data: data)
+                items = []
+                try await saveItems()
+            }
         } catch {
+            if isFileNotFound(error) {
+                // Another writer may have replaced the file between exists-check and read.
+                // Treat as empty and continue instead of failing the whole request.
+                items = []
+                return
+            }
             throw SessionError.retrievalFailed(
                 reason: "Failed to load session from \(path)",
                 underlyingError: error.localizedDescription
@@ -205,7 +223,7 @@ public actor FileBasedSession: Session {
     private func saveItems() async throws {
         do {
             // Ensure directory exists
-            await ensureDirectoryExists()
+            try ensureDirectoryExists()
             
             // Convert to storage format
             let storedItems = items.map { StoredMessage(from: $0) }
@@ -215,16 +233,9 @@ public actor FileBasedSession: Session {
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(storedItems)
-            
-            // Write to temporary file first, then move (atomic operation)
-            let tempPath = sessionFilePath + ".tmp"
-            try data.write(to: URL(fileURLWithPath: tempPath))
-            
-            // Move temp file to final location
-            if fileManager.fileExists(atPath: sessionFilePath) {
-                try fileManager.removeItem(atPath: sessionFilePath)
-            }
-            try fileManager.moveItem(atPath: tempPath, toPath: sessionFilePath)
+
+            // Atomic write avoids a read-visible delete gap for concurrent readers.
+            try data.write(to: URL(fileURLWithPath: sessionFilePath), options: .atomic)
             
             // Set restrictive permissions (owner read/write only)
             try setSecurePermissions(path: sessionFilePath)
@@ -240,20 +251,24 @@ public actor FileBasedSession: Session {
     }
     
     /// Ensures the session directory exists.
-    private func ensureDirectoryExists() async {
+    private func ensureDirectoryExists() throws {
         let dirPath = (sessionFilePath as NSString).deletingLastPathComponent
         
         if !fileManager.fileExists(atPath: dirPath) {
-            do {
-                try fileManager.createDirectory(
-                    atPath: dirPath,
-                    withIntermediateDirectories: true,
-                    attributes: nil
-                )
-            } catch {
-                // Directory creation failed, but we'll handle it when saving
-            }
+            try fileManager.createDirectory(
+                atPath: dirPath,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
         }
+    }
+
+    /// Moves malformed session content aside for diagnostics.
+    private func backupCorruptSessionFile(data: Data) throws {
+        let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let backupPath = "\(sessionFilePath).corrupt-\(timestamp)"
+        try data.write(to: URL(fileURLWithPath: backupPath), options: .atomic)
+        try setSecurePermissions(path: backupPath)
     }
     
     /// Sets file permissions to 600 (owner read/write only).
@@ -270,6 +285,17 @@ public actor FileBasedSession: Session {
             )
         }
         #endif
+    }
+
+    private func isFileNotFound(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain {
+            return nsError.code == NSFileReadNoSuchFileError || nsError.code == NSFileNoSuchFileError
+        }
+        if nsError.domain == NSPOSIXErrorDomain {
+            return nsError.code == ENOENT
+        }
+        return false
     }
 }
 
@@ -299,5 +325,40 @@ private struct StoredMessage: Codable {
             timestamp: timestamp,
             metadata: metadata
         )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case role
+        case content
+        case timestamp
+        case metadata
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        self.id = (try? container.decode(UUID.self, forKey: .id)) ?? UUID()
+        self.role = (try? container.decode(String.self, forKey: .role)) ?? "user"
+        self.content = (try? container.decode(String.self, forKey: .content)) ?? ""
+        self.metadata = (try? container.decode([String: String].self, forKey: .metadata)) ?? [:]
+
+        if let parsedDate = try? container.decode(Date.self, forKey: .timestamp) {
+            self.timestamp = parsedDate
+        } else if let rawDate = try? container.decode(String.self, forKey: .timestamp),
+                  let parsed = StoredMessage.parseDate(rawDate) {
+            self.timestamp = parsed
+        } else {
+            self.timestamp = Date()
+        }
+    }
+
+    private static func parseDate(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        if let parsed = formatter.date(from: value) {
+            return parsed
+        }
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: value)
     }
 }

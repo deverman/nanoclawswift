@@ -37,7 +37,7 @@ The previously observed stale digest metadata mismatch was repaired on this host
 
 - `container image ls` now succeeds.
 - `container run` and env injection checks continue to pass.
-- A runtime preflight now checks `container image inspect <CONTAINER_IMAGE>` and warns with recovery steps if `container image ls` reports digest metadata failures.
+- `nanoclaw-host` startup now performs stale `nanoclaw-*` container cleanup and logs session startup failures with daemon log tails.
 
 ## Tailscale Interaction (Important)
 
@@ -50,8 +50,9 @@ Observed pattern:
 
 Runtime mitigation now in this repo:
 
-- `src/container-runner.ts` auto-detects default route interface.
-- In `CONTAINER_LLM_RELAY_MODE=auto` and no explicit `BASE_URL`, if default route is `utun*` it enables a host LLM relay and sets container `BASE_URL` to:
+- `src/index.ts` starts `src/host-relay.ts` before launching `nanoclaw-host`.
+- Adapter startup logs default route interface (`route -n get default`) and relay mode.
+- In `CONTAINER_LLM_RELAY_MODE=auto` and no explicit `BASE_URL`, startup sets container `BASE_URL` to:
   - `http://192.168.64.1:18081/relay/openai/v1`
   - `http://192.168.64.1:18081/relay/kimi/v1`
   - `http://192.168.64.1:18081/relay/anthropic/v1`
@@ -70,10 +71,15 @@ Quick diagnostics:
 
 ## Code Changes Applied In This Repo
 
-- Updated `/Users/deverman/Documents/Code/nanoclawswift/src/container-runner.ts` to generate a per-group env file under `data/env/` and pass it with `container run --env-file`.
-- Removed the old mounted `env-dir` workaround path from runtime mounts.
-- Added a container preflight in `/Users/deverman/Documents/Code/nanoclawswift/src/container-runner.ts` to fail fast if the configured image is missing and to surface digest-drift recovery guidance.
-- Added Tailscale-aware relay fallback in `/Users/deverman/Documents/Code/nanoclawswift/src/container-runner.ts` for `utun` default-route environments.
+- Replaced one-shot Node container orchestration with Swift host orchestration:
+  - `/Users/deverman/Documents/Code/nanoclawswift/Sources/NanoClawHost/NanoClawHostService.swift`
+  - `/Users/deverman/Documents/Code/nanoclawswift/Sources/NanoClawHost/ContainerSessionManager.swift`
+- Added Node channel adapter host bridge:
+  - `/Users/deverman/Documents/Code/nanoclawswift/src/host-client.ts`
+  - `/Users/deverman/Documents/Code/nanoclawswift/src/index.ts`
+- Added host relay + web broker for container traffic:
+  - `/Users/deverman/Documents/Code/nanoclawswift/src/host-relay.ts`
+- Added Tailscale-aware relay bootstrap in adapter startup (`src/index.ts`) so `BASE_URL` and `NANOCLAW_WEB_BROKER_URL` are set before `nanoclaw-host` starts.
 - Added `/Users/deverman/Documents/Code/nanoclawswift/scripts/container-smoke.sh` and `npm run container:smoke` for repeatable runtime validation.
 
 ## Recommended Ongoing Maintenance Step (Host)

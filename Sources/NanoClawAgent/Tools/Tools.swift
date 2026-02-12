@@ -168,9 +168,13 @@ public struct GlobTool: Tool, Sendable {
         guard let pattern = arguments["pattern"]?.stringValue else {
             throw AgentError.invalidToolArguments(toolName: name, reason: "Missing pattern parameter")
         }
+        let normalizedPattern = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedPattern.isEmpty else {
+            throw AgentError.invalidToolArguments(toolName: name, reason: "Pattern cannot be empty")
+        }
         
         let basePath = resolveBasePath()
-        let results = try glob(pattern: pattern, in: basePath)
+        let results = try glob(pattern: normalizedPattern, in: basePath)
         return .string(results.joined(separator: "\n"))
     }
     
@@ -194,11 +198,28 @@ public struct GlobTool: Tool, Sendable {
             }
         } else {
             // Single directory
-            let dirPattern = (pattern as NSString).deletingLastPathComponent
-            let filePattern = (pattern as NSString).lastPathComponent
+            let dirPattern: String
+            let filePattern: String
+            if let slash = pattern.lastIndex(of: "/") {
+                dirPattern = String(pattern[..<slash])
+                filePattern = String(pattern[pattern.index(after: slash)...])
+            } else {
+                dirPattern = ""
+                filePattern = pattern
+            }
+            guard !filePattern.isEmpty else {
+                throw AgentError.invalidToolArguments(toolName: name, reason: "Invalid pattern: missing filename segment")
+            }
             let searchURL = dirPattern.isEmpty ? baseURL : baseURL.appendingPathComponent(dirPattern)
-            
-            let items = try FileManager.default.contentsOfDirectory(at: searchURL, includingPropertiesForKeys: nil)
+
+            guard FileManager.default.fileExists(atPath: searchURL.path) else {
+                return []
+            }
+
+            let items = try FileManager.default.contentsOfDirectory(
+                at: searchURL,
+                includingPropertiesForKeys: nil
+            )
             for item in items {
                 let itemName = item.lastPathComponent
                 if matchesSimplePattern(itemName, pattern: filePattern) {

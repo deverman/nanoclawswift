@@ -13,7 +13,7 @@
 
 ### Key Improvements
 
-- **🚀 Swift Performance** - Native binary, no Node.js overhead
+- **🚀 Swift-First Runtime** - Swift host orchestrator + Swift container agent
 - **🤖 Multi-Model Support** - Kimi K2.5, OpenAI GPT-4, Anthropic Claude
 - **🔒 Type Safety** - Swift's type system catches errors at compile time
 - **⚡ Modern Concurrency** - async/await throughout
@@ -80,14 +80,14 @@ Troubleshooting:
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           HOST (macOS)                                  │
-│                    Node.js Orchestration (UNCHANGED)                    │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────────────────┐ │
-│  │ WhatsApp │  │Scheduler │  │  IPC     │  │  Container Spawner      │ │
-│  │ (baileys)│  │  Loop    │  │ Watcher  │  │  (container-runner.ts)  │ │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───────────┬─────────────┘ │
-│       └─────────────┴─────────────┴────────────────────┘               │
-│                              │                                         │
-│                              ▼                                         │
+│  ┌──────────────────────┐    Unix socket HTTP     ┌──────────────────┐ │
+│  │ Node channel adapters │  ───────────────────▶   │ Swift host        │ │
+│  │ Telegram + WhatsApp   │                         │ (nanoclaw-host)   │ │
+│  │ outbound claim/ack    │  ◀───────────────────   │ queue/scheduler/DB│ │
+│  └──────────────────────┘                          └────────┬─────────┘ │
+│                                                              │           │
+│                                      mounted IPC files       │           │
+│                                      (request/response)      ▼           │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                      APPLE CONTAINER (Linux VM)                         │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
@@ -98,7 +98,7 @@ Troubleshooting:
 │  │  │ ├─ ToolCallingAgent (native structured tool calls)          │ │  │
 │  │  │ ├─ FileSystem, Bash, IPC, WebFetch/WebSearch Tools          │ │  │
 │  │  │ ├─ CLAUDEMemory (CLAUDE.md context)                         │ │  │
-│  │  │ └─ FileBasedSession (JSON persistence)                      │ │  │
+│  │  │ └─ Daemon mode for long-running group sessions              │ │  │
 │  │  └─────────────────────────────────────────────────────────────┘ │  │
 │  │                                                                   │  │
 │  │  ┌─────────────────────────────────────────────────────────────┐ │  │
@@ -129,7 +129,7 @@ Create `/workspace/config.json`:
   "api_key": "sk-your-kimi-key",
   "model_provider": "kimi",
   "model_name": "kimi-k2.5",
-  "timeout": 60
+  "timeout": 180
 }
 ```
 
@@ -159,6 +159,18 @@ NanoClaw now uses a two-layer web policy model:
 - Group overlay (container-writable): `groups/<group>/.nanoclaw/web-policy.overlay.json`
 
 Use `config-examples/web-policy.global.json` as a template.
+
+### Host Latency & UX Controls
+
+`nanoclaw-host` supports runtime tuning via environment variables:
+
+- `NANOCLAW_WORKING_ACK_ENABLED` (default `true`) - enables delayed "working on it" user acknowledgement
+- `NANOCLAW_WORKING_ACK_THRESHOLD_MS` (default `8000`) - delay before emitting working acknowledgement
+- `NANOCLAW_LATENCY_WINDOW_SIZE` (default `200`) - rolling sample window for latency metrics
+- `NANOCLAW_LATENCY_SLO_P50_MS` (default `15000`) - p50 warning threshold
+- `NANOCLAW_LATENCY_SLO_P95_MS` (default `60000`) - p95 warning threshold
+- `NANOCLAW_TIMEOUT_ALERT_RATE` (default `0.05`) - warning threshold for timeout-rate
+- `NANOCLAW_RETRY_ALERT_RATE` (default `0.02`) - warning threshold for inbound retry-rate
 
 ## Philosophy (Still True)
 
@@ -190,6 +202,7 @@ Use `config-examples/web-policy.global.json` as a template.
 - **IPC communication** - Send WhatsApp messages, schedule tasks
 - **Session persistence** - Conversation history in JSON files
 - **Conversation archiving** - Automatic transcript saving
+- **Cron engine abstraction** - `CronEngineKit` library target for robust timezone-aware schedule computation
 
 ## Swarm Version Note
 
@@ -200,7 +213,7 @@ This repo currently pins `Swarm` to `0.3.1` for build stability.
 
 ```
 nanoclawswift/
-├── Sources/NanoClawAgent/         # Swift implementation
+├── Sources/NanoClawAgent/         # Swift container agent
 │   ├── NanoClawAgentCLI.swift     # CLI entry point
 │   ├── NanoClawAgent.swift        # Agent implementation
 │   ├── Configuration/             # Config loading
@@ -208,6 +221,13 @@ nanoclawswift/
 │   ├── Tools/                     # FileSystem, Bash, IPC, Web tools
 │   ├── Memory/                    # Session & CLAUDE.md
 │   └── Hooks/                     # Conversation archiving
+├── Sources/NanoClawHost/          # Swift host orchestrator (queue, scheduler, SQLite)
+├── Sources/CronEngineKit/         # Reusable cron parsing + next-run engine
+│   └── CronEngine.swift           # CronEngine protocol + VixieCronEngine
+├── src/
+│   ├── index.ts                   # Node channel adapters bootstrap
+│   ├── host-client.ts             # Unix socket client for nanoclaw-host
+│   └── host-relay.ts              # Host relay + web broker endpoints
 ├── Tests/                         # Swift tests
 ├── container/
 │   ├── Dockerfile.slim            # Swift 6.0 container

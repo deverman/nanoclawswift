@@ -2,6 +2,7 @@ import Foundation
 
 /// Loads configuration from JSON files and environment variables
 public struct ConfigLoader {
+    private static let defaultTimeoutSeconds = 180
     
     /// Load configuration from a JSON file path
     public static func load(from path: String) async throws -> NanoClawConfig {
@@ -114,7 +115,7 @@ public struct ConfigLoader {
         }
         
         // Other settings (env vars take priority)
-        let timeout = Int(envTimeout ?? "") ?? fileConfig.timeout ?? 60
+        let timeout = Int(envTimeout ?? "") ?? fileConfig.timeout ?? defaultTimeoutSeconds
         let maxTokens = Int(envMaxTokens ?? "") ?? fileConfig.max_tokens
         let baseURL = envBaseURL ?? fileConfig.base_url ?? defaultBaseURL
         let assistantName = envAssistantName ?? fileConfig.assistant_name
