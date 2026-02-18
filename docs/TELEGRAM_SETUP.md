@@ -1,167 +1,86 @@
-# Telegram Setup Guide (Direct Messages)
+# Telegram Setup (Swift Host Runtime)
 
-This guide sets up Telegram as a **direct messaging** channel - you chat 1-on-1 with your bot, no groups needed!
+Updated: 2026-02-17
 
-## Why Direct Messages?
+## 1) Create Bot and Owner ID
 
-- ✅ **No groups required** - Just DM the bot directly
-- ✅ **No @Andy trigger** - Just type your message in the private chat
-- ✅ **More private** - Your conversations stay between you and the bot
-- ✅ **Faster** - No need to mention the bot in a group
+1. Create a bot via `@BotFather` and copy the token.
+2. Get your numeric Telegram user ID (for example with `@userinfobot`).
 
-## Quick Setup (2 minutes)
-
-### 1. Create a Telegram Bot
-
-1. Open Telegram and message **@BotFather**
-2. Send: `/newbot`
-3. Choose a name (e.g., "My NanoClaw")
-4. Choose a username (must end in `bot`, e.g., `my_nanoclaw_bot`)
-5. **Save the token** BotFather gives you:
-   ```
-   123456789:ABCdefGHIjklMNOpqrSTUvwxyz
-   ```
-
-### 2. Get Your Telegram User ID
-
-1. Message **@userinfobot** on Telegram
-2. It will reply with your ID (e.g., `123456789`)
-3. **Save this number**
-
-### 3. Set Environment Variables
-
-Add to your `~/.zshenv` or `~/.bash_profile`:
+## 2) Export Required Environment Variables
 
 ```bash
-export TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrSTUvwxyz"
-export TELEGRAM_OWNER_ID="123456789"
+export TELEGRAM_BOT_TOKEN="<bot-token>"
+export TELEGRAM_OWNER_ID="<numeric-user-id>"
+
+export MODEL_PROVIDER="kimi"
+export MODEL_NAME="kimi-k2.5"
+export MOONSHOT_API_KEY="<api-key>"
 ```
 
-Reload:
+Optional:
+
 ```bash
-source ~/.zshenv
+export NANOCLAW_PROVIDER_RPM_LIMIT="18"
+export NANOCLAW_FALLBACK_PROVIDER="openai"
+export NANOCLAW_FALLBACK_MODEL="gpt-4.1-mini"
+export NANOCLAW_FALLBACK_API_KEY="<fallback-key>"
 ```
 
-### 4. Run NanoClaw
+## 3) Build and Start
 
 ```bash
-npm run dev
+swift test
+swift run nanoclaw-devctl rebuild-and-restart slim --foreground
 ```
 
-### 5. Start Chatting
+If you prefer background mode:
 
-1. Message your bot on Telegram
-2. Send `/start`
-3. Just type any message - the bot responds immediately!
-   ```
-   Hello!
-   What is 2+2?
-   Write a Python script to sort a list
-   ```
-
-No `@Andy` needed in direct messages!
-
----
-
-## How It Works
-
-**Direct Chat Mode:**
-```
-You → Telegram Bot → Swift Agent → Response
-      (private DM)    (Apple Container)
-```
-
-**Security:**
-- Only your Telegram user ID (TELEGRAM_OWNER_ID) can chat with the bot
-- Creates folder: `groups/telegram-direct/`
-- Uses same Swift agent in Apple containers
-- Same isolated memory (CLAUDE.md) as WhatsApp groups
-
-**Commands:**
-- `/start` - Welcome message
-- `/help` - Show available commands
-- `/status` - Check bot status
-- `/new` - Reset conversation (clear session)
-
-**Plus any message** - Just type and the bot responds!
-
----
-
-## Optional: Groups Still Work
-
-If you want the bot in a Telegram **group** (so others can use it too):
-
-1. Add the bot to a group
-2. Register it manually in `data/registered_groups.json`:
-   ```json
-   {
-     "groups": {
-       "telegram_-123456789@g.us": {
-         "name": "My Group",
-         "folder": "telegram-group",
-         "isMain": false
-       }
-     }
-   }
-   ```
-   (Get group ID by adding @RawDataBot to the group)
-
-3. In groups, use `@Andy` trigger:
-   ```
-   @Andy summarize this
-   ```
-
----
-
-## Troubleshooting
-
-**"Bot not responding"**
 ```bash
-# Check environment variables
-echo $TELEGRAM_BOT_TOKEN
-echo $TELEGRAM_OWNER_ID
-
-# Both should show your values
+swift run nanoclaw-devctl rebuild-and-restart slim
+swift run nanoclaw-hostctl status
 ```
 
-**"Unauthorized direct message blocked"**
-- Your TELEGRAM_OWNER_ID doesn't match your Telegram user ID
-- Message @userinfobot again to confirm your ID
+## 4) Smoke Test
 
-**"Bot says 'this bot is private'"**
-- You haven't set TELEGRAM_OWNER_ID
-- Or the ID is wrong
+From Telegram DM to your bot:
 
-**"How do I allow multiple users?"**
-Currently only supports one owner. For multiple users, create a Telegram group instead.
+- `Please list tasks`
+- `Please use the list_skills tool`
 
----
+You should receive a response within seconds.
 
-## Architecture
+## 5) Troubleshooting
 
-```
-┌─ Telegram DM ──┐
-│  Private Chat  │  (no @Andy needed)
-└───────┬────────┘
-        │
-        ▼
-┌──────────────────┐
-│  Telegram Bot    │  (grammY)
-│  Checks owner ID │
-└───────┬──────────┘
-        │
-        ▼
-┌──────────────────┐
-│  Auto-creates:   │
-│  telegram-direct │
-│  folder + CLAUDE.md
-└───────┬──────────┘
-        │
-        ▼
-┌──────────────────┐
-│  Swift Agent     │  (Apple Container)
-│  Same as WhatsApp│
-└──────────────────┘
+### No response
+
+1. Check health:
+
+```bash
+swift run nanoclaw-hostctl status
 ```
 
-Your direct messages and WhatsApp groups share the same agent but have **isolated memory** (separate CLAUDE.md files).
+2. Check logs:
+
+```bash
+tail -n 200 /tmp/nanoclaw-host.log
+```
+
+3. Verify `TELEGRAM_BOT_TOKEN` and `TELEGRAM_OWNER_ID` are set in the host process environment.
+
+### Unauthorized DM
+
+- `TELEGRAM_OWNER_ID` is missing or incorrect.
+- Re-check your numeric Telegram user ID and restart host.
+
+### Repeated 429 rate-limit failures
+
+- Reduce request burst volume.
+- Set `NANOCLAW_PROVIDER_RPM_LIMIT` to stay below provider limits.
+- Configure fallback provider variables if needed.
+
+## Notes
+
+- Telegram direct message mode is owner-gated by `TELEGRAM_OWNER_ID`.
+- Scheduled tasks run when host is running; missed tasks are catch-up queued on startup.
+- Telegram is the only active channel in this phase.

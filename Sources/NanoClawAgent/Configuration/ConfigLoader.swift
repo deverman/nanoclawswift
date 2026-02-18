@@ -18,6 +18,13 @@ public struct ConfigLoader {
         let envTimeout = ProcessInfo.processInfo.environment["TIMEOUT"]
         let envMaxTokens = ProcessInfo.processInfo.environment["MAX_TOKENS"]
         let envAssistantName = ProcessInfo.processInfo.environment["ASSISTANT_NAME"]
+        let envProviderRPM = ProcessInfo.processInfo.environment["NANOCLAW_PROVIDER_RPM_LIMIT"]
+        let envKimiRPM = ProcessInfo.processInfo.environment["KIMI_RPM_LIMIT"]
+        let envFallbackProvider = ProcessInfo.processInfo.environment["NANOCLAW_FALLBACK_PROVIDER"]
+        let envFallbackModel = ProcessInfo.processInfo.environment["NANOCLAW_FALLBACK_MODEL"]
+        let envFallbackBaseURL = ProcessInfo.processInfo.environment["NANOCLAW_FALLBACK_BASE_URL"]
+        let envFallbackAPIKey = ProcessInfo.processInfo.environment["NANOCLAW_FALLBACK_API_KEY"]
+        let envFallbackRPM = ProcessInfo.processInfo.environment["NANOCLAW_FALLBACK_RPM_LIMIT"]
         
         // Load JSON config file
         let fileURL = URL(fileURLWithPath: path)
@@ -119,6 +126,49 @@ public struct ConfigLoader {
         let maxTokens = Int(envMaxTokens ?? "") ?? fileConfig.max_tokens
         let baseURL = envBaseURL ?? fileConfig.base_url ?? defaultBaseURL
         let assistantName = envAssistantName ?? fileConfig.assistant_name
+        let requestsPerMinuteLimit: Int? = {
+            if let explicit = Int(envProviderRPM ?? ""), explicit > 0 {
+                return explicit
+            }
+            if provider == .kimi {
+                if let kimiValue = Int(envKimiRPM ?? ""), kimiValue > 0 {
+                    return kimiValue
+                }
+                return 8
+            }
+            return nil
+        }()
+        let fallbackProvider: ModelProvider? = {
+            guard let raw = envFallbackProvider?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty else { return nil }
+            return ModelProvider(rawValue: raw)
+        }()
+        let fallbackModel: ModelName? = {
+            guard let raw = envFallbackModel?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty else { return nil }
+            return ModelName(rawValue: raw)
+        }()
+        let fallbackAPIKey: String? = {
+            guard let fallbackProvider else { return nil }
+            if let explicit = envFallbackAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !explicit.isEmpty {
+                return explicit
+            }
+            switch fallbackProvider {
+            case .openai:
+                return envOpenAIKey
+            case .kimi:
+                return envMoonshotKey
+            case .anthropic:
+                return envAnthropicKey
+            }
+        }()
+        let fallbackRequestsPerMinuteLimit: Int? = {
+            if let raw = envFallbackRPM, let parsed = Int(raw), parsed > 0 {
+                return parsed
+            }
+            return nil
+        }()
         
         return NanoClawConfig(
             apiKey: apiKey,
@@ -127,7 +177,13 @@ public struct ConfigLoader {
             baseURL: baseURL,
             timeout: timeout,
             maxTokens: maxTokens,
-            assistantName: assistantName
+            assistantName: assistantName,
+            requestsPerMinuteLimit: requestsPerMinuteLimit,
+            fallbackProvider: fallbackProvider,
+            fallbackAPIKey: fallbackAPIKey,
+            fallbackModel: fallbackModel,
+            fallbackBaseURL: envFallbackBaseURL,
+            fallbackRequestsPerMinuteLimit: fallbackRequestsPerMinuteLimit
         )
     }
 }

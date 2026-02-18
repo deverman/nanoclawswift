@@ -70,3 +70,20 @@ func testFileBasedSessionRecoversFromMalformedJson() async throws {
     let decoded = try JSONDecoder().decode([MemoryMessage].self, from: repairedData)
     #expect(decoded.isEmpty)
 }
+
+@Test
+func testFileBasedSessionSkipsConsecutiveDuplicateMessages() async throws {
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let groupPath = tempDir.appendingPathComponent("group-d").path
+    let session = FileBasedSession(groupFolder: groupPath)
+
+    let repeated = MemoryMessage.user("Please use the list_skills tool")
+    try await session.addItems([repeated, repeated])
+
+    let items = try await session.getItems(limit: nil)
+    #expect(items.count == 1)
+    #expect(items.first?.content == "Please use the list_skills tool")
+}

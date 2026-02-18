@@ -1,3 +1,10 @@
+/**
+ * DEPRECATED TRANSITIONAL MODULE
+ *
+ * Swift host runtime now owns relay/web broker behavior.
+ * Keep this file only as temporary reference during Swift-only cleanup.
+ */
+
 import dns from 'dns';
 import fs from 'fs';
 import http, { type IncomingMessage, type RequestOptions, type ServerResponse } from 'http';

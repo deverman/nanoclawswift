@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "NanoClawAgent",
     platforms: [
-        .macOS(.v14),
+        .macOS("26.0"),
         .iOS(.v17)
     ],
     products: [
@@ -21,13 +21,21 @@ let package = Package(
             targets: ["NanoClawHost"]
         ),
         .executable(
+            name: "nanoclaw-hostctl",
+            targets: ["NanoClawHostCtl"]
+        ),
+        .executable(
             name: "session-summary",
             targets: ["SessionSummaryCLI"]
         ),
+        .executable(
+            name: "nanoclaw-devctl",
+            targets: ["NanoClawDevCtl"]
+        ),
     ],
     dependencies: [
-        // SwiftAgents - Pinned to exact version for stability
-        .package(url: "https://github.com/christopherkarani/Swarm.git", exact: "0.3.1"),
+        // SwiftAgents - vendored for local dependency control on macOS 26 migration.
+        .package(path: "Packages/Swarm"),
         
         // CLI argument parsing
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
@@ -43,6 +51,15 @@ let package = Package(
 
         // Apple Containerization (target version 0.8.0+)
         .package(url: "https://github.com/apple/containerization.git", from: "0.8.0"),
+
+        // Telegram Bot API SDK (Swift-native polling/webhook support)
+        .package(url: "https://github.com/nerzh/swift-telegram-bot.git", from: "4.3.0"),
+
+        // Official Swift MCP SDK
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.2"),
+
+        // Lightweight, production-grade Swift HTTP server/router
+        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
     ],
     targets: [
         .target(
@@ -68,6 +85,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Configuration", package: "swift-configuration"),
+                .product(name: "MCP", package: "swift-sdk"),
             ],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
@@ -94,6 +112,25 @@ let package = Package(
                 .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
+        .testTarget(
+            name: "NanoClawDevCtlTests",
+            dependencies: [
+                "NanoClawDevCtl",
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
+            ],
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .testTarget(
+            name: "NanoClawHostCtlTests",
+            dependencies: [
+                "NanoClawHostCtl"
+            ],
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
         .executableTarget(
             name: "NanoClawHost",
             dependencies: [
@@ -102,6 +139,18 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Configuration", package: "swift-configuration"),
                 .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "SwiftTelegramBot", package: "swift-telegram-bot"),
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "MCP", package: "swift-sdk"),
+            ],
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .executableTarget(
+            name: "NanoClawHostCtl",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
             ],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
@@ -111,6 +160,15 @@ let package = Package(
             name: "SessionSummaryCLI",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
+            ]
+        ),
+        .executableTarget(
+            name: "NanoClawDevCtl",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
+            ],
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
     ]

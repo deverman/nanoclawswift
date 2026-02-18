@@ -136,7 +136,14 @@ public actor FileBasedSession: Session {
     /// - Throws: `SessionError.storageFailed` if saving fails.
     public func addItems(_ newItems: [MemoryMessage]) async throws {
         try await loadItems()
-        items.append(contentsOf: newItems)
+        for item in newItems {
+            if let last = items.last,
+               last.role == item.role,
+               last.content == item.content {
+                continue
+            }
+            items.append(item)
+        }
         try await saveItems()
     }
     
@@ -166,6 +173,19 @@ public actor FileBasedSession: Session {
     /// - Throws: `SessionError.deletionFailed` if clearing fails.
     public func clearSession() async throws {
         items.removeAll()
+        try await saveItems()
+    }
+
+    /// Compacts session history by keeping only the most recent items.
+    public func compact(retainLast: Int) async throws {
+        let keepCount = max(0, retainLast)
+        try await loadItems()
+        guard items.count > keepCount else { return }
+        if keepCount == 0 {
+            items.removeAll()
+        } else {
+            items = Array(items.suffix(keepCount))
+        }
         try await saveItems()
     }
     

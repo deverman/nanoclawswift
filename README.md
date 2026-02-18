@@ -1,323 +1,214 @@
-<p align="center">
-  <img src="assets/nanoclaw-logo.png" alt="NanoClawSwift" width="400">
-</p>
+# NanoClawSwift
 
-<p align="center">
-  My personal AI assistant that runs securely in Apple containers. 
-  Now with Swift Agents, multi-model support (Kimi, OpenAI, Anthropic), and blazing fast performance.
-</p>
+Swift-first personal AI assistant for Telegram, running with host/container isolation on Apple Containers.
 
-## Overview
+## Current Runtime (as of 2026-02-18)
 
-**NanoClawSwift** is a complete rewrite of NanoClaw in Swift, built with the SwiftAgents framework (from the renamed `Swarm` repository). It maintains the same security-by-isolation philosophy while adding model agnosticism, better performance, and modern Swift concurrency.
-
-### Key Improvements
-
-- **🚀 Swift-First Runtime** - Swift host orchestrator + Swift container agent
-- **🤖 Multi-Model Support** - Kimi K2.5, OpenAI GPT-4, Anthropic Claude
-- **🔒 Type Safety** - Swift's type system catches errors at compile time
-- **⚡ Modern Concurrency** - async/await throughout
-- **🧪 Better Testing** - Swift Testing framework
-- **📦 Smaller Containers** - ~20MB static binary vs 200MB+ Node.js
-
-## Quick Start
-
-```bash
-# Clone the Swift fork
-git clone https://github.com/deverman/nanoclawswift.git
-cd nanoclawswift
-git checkout swift-agent
-
-# Build the Swift agent
-swift build -c release
-
-# Configure your API key
-export MOONSHOT_API_KEY="your-kimi-api-key"
-
-# Test locally
-echo '{"prompt":"What is 2+2?"}' | ./.build/release/nanoclaw-agent --group-folder test --chat-jid test@g.us
-```
-
-## Mac Mini Bring-Up (Telegram First)
-
-```bash
-# 1) Clone and enter repo
-git clone https://github.com/deverman/nanoclawswift.git
-cd nanoclawswift
-git checkout swift-agent
-
-# 2) Use Node 24.6.0
-export NVM_DIR="$HOME/.nvm"
-source "$NVM_DIR/nvm.sh"
-nvm use 24.6.0
-export PATH="$NVM_DIR/versions/node/v24.6.0/bin:$PATH"
-
-# 3) Install dependencies
-npm ci
-
-# 4) Build/verify Swift runtime
-swift test
-./container/build-swift.sh slim
-
-# 5) Export required env vars
-export MOONSHOT_API_KEY="sk-..."
-export TELEGRAM_BOT_TOKEN="..."
-export TELEGRAM_OWNER_ID="..."
-export MODEL_PROVIDER="kimi"
-export MODEL_NAME="kimi-k2.5"
-export CONTAINER_LLM_RELAY_MODE="auto"
-
-# 6) Start app (Telegram-only mode)
-WHATSAPP_ENABLED=0 npm run dev
-```
-
-Troubleshooting:
-- If you see `EADDRINUSE ... 0.0.0.0:18081`, another stale dev process is holding relay port 18081; stop it, then restart `npm run dev`.
-- If Kimi returns `invalid temperature: only 1 is allowed for this model`, rebuild the image (`./container/build-swift.sh slim`) and restart; provider now forces compatible temperature for Kimi.
+- Swift host runtime (`nanoclaw-host`) and Swift container agent (`nanoclaw-agent`)
+- Telegram-only inbound/outbound channel (polling)
+- Continuous typing heartbeat with lifecycle cleanup
+- Telegram-safe message splitting (4096 limit-aware)
+- Skills tools: `list_skills`, `activate_skill`, `deactivate_skill`, `sync_skills`
+  - Default roots: `CODEX_HOME/skills`, `~/.codex/skills`, `~/.claude/skills`
+- Parity tools: `todo_read`, `todo_write`, `sub_agent`, `get_task_history`, `export_chat`
+- Memory tools: `read_memory`, `write_memory` (`chat` and `global` scopes)
+- `send_message` supports text, attachments, and captions
+- MCP runtime bootstrap from `.mcp.json` on agent startup
+- Host MCP bridge for `runtime: "host"` servers in `.mcp.json` (no code changes required per server)
+- Generic host MCP CLI tool: `mcp_host_cli` (for token-cheap direct CLI calls)
+- MCP reload tool: `mcp_reload` (re-reads `.mcp.json` and reboots host MCP registrations)
+- FocusRelay compatibility tools remain available: `focusrelay_inbox_tasks`, `focusrelay_cli`, `focusrelay_bridge_health`
+- Multi-channel support is intentionally deferred
 
 ## Architecture
 
+```text
+Telegram -> Swift Telegram Adapter (host) -> Host Queue/Scheduler/DB -> Container Session -> Swift Agent
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           HOST (macOS)                                  │
-│  ┌──────────────────────┐    Unix socket HTTP     ┌──────────────────┐ │
-│  │ Node channel adapters │  ───────────────────▶   │ Swift host        │ │
-│  │ Telegram + WhatsApp   │                         │ (nanoclaw-host)   │ │
-│  │ outbound claim/ack    │  ◀───────────────────   │ queue/scheduler/DB│ │
-│  └──────────────────────┘                          └────────┬─────────┘ │
-│                                                              │           │
-│                                      mounted IPC files       │           │
-│                                      (request/response)      ▼           │
-├─────────────────────────────────────────────────────────────────────────┤
-│                      APPLE CONTAINER (Linux VM)                         │
-│  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │                    nanoclaw-agent (Swift Binary)                  │  │
-│  │                                                                   │  │
-│  │  ┌─────────────────────────────────────────────────────────────┐ │  │
-│  │  │ NanoClawAgent (SwiftAgents Framework)                       │ │  │
-│  │  │ ├─ ToolCallingAgent (native structured tool calls)          │ │  │
-│  │  │ ├─ FileSystem, Bash, IPC, WebFetch/WebSearch Tools          │ │  │
-│  │  │ ├─ CLAUDEMemory (CLAUDE.md context)                         │ │  │
-│  │  │ └─ Daemon mode for long-running group sessions              │ │  │
-│  │  └─────────────────────────────────────────────────────────────┘ │  │
-│  │                                                                   │  │
-│  │  ┌─────────────────────────────────────────────────────────────┐ │  │
-│  │  │ OpenAICompatibleProvider                                    │ │  │
-│  │  │ ├─ Kimi API (Moonshot)                                      │ │  │
-│  │  │ ├─ OpenAI API                                               │ │  │
-│  │  │ └─ Anthropic API (via OpenRouter)                          │ │  │
-│  │  └─────────────────────────────────────────────────────────────┘ │  │
-│  └───────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+
+Host responsibilities:
+- Telegram polling and outbound delivery
+- Scheduling and task state in SQLite
+- Container session lifecycle, watchdog, janitor, startup catch-up
+- Optional host relay for provider/network edge cases
+
+Agent responsibilities:
+- Route selection (`ToolCallingAgent` vs `PlanAndExecuteAgent`)
+- Tool execution with side-effect controls
+- Persistent session + memory context
+- MCP tool registration/execution
+
+## Prerequisites
+
+- macOS 26
+- Swift 6.2.3 toolchain
+- Apple `container` CLI installed and working
+- Telegram bot token and owner ID
+- At least one model provider API key (for example Moonshot/Kimi)
 
 ## Configuration
 
-### API Key Setup
+Set environment in your shell (or `.env` for local hostctl loading):
 
-**Option 1: Environment Variables**
 ```bash
-export MOONSHOT_API_KEY="sk-your-kimi-key"
-export MODEL_PROVIDER="kimi"  # or "openai", "anthropic"
+export TELEGRAM_BOT_TOKEN="<bot-token>"
+export TELEGRAM_OWNER_ID="<numeric-user-id>"
+
+export MODEL_PROVIDER="kimi"
 export MODEL_NAME="kimi-k2.5"
+export MOONSHOT_API_KEY="<api-key>"
+
+# Optional reliability/limits
+export NANOCLAW_PROVIDER_RPM_LIMIT="18"
+export NANOCLAW_FALLBACK_PROVIDER="openai"
+export NANOCLAW_FALLBACK_MODEL="gpt-4.1-mini"
+export NANOCLAW_FALLBACK_API_KEY="<fallback-key>"
 ```
 
-**Option 2: Config File**
-Create `/workspace/config.json`:
+## Build and Run
+
+```bash
+swift test
+swift run nanoclaw-devctl rebuild-and-restart slim --foreground
+```
+
+Background mode:
+
+```bash
+swift run nanoclaw-devctl rebuild-and-restart slim
+swift run nanoclaw-hostctl status
+```
+
+Stop host:
+
+```bash
+swift run nanoclaw-hostctl stop
+```
+
+## Telegram Smoke Test
+
+1. Send a direct Telegram message to your bot: `Please list tasks`
+2. Confirm response arrives.
+3. Confirm host health:
+
+```bash
+swift run nanoclaw-hostctl status
+```
+
+4. Check host log if needed:
+
+```bash
+tail -n 200 /tmp/nanoclaw-host.log
+```
+
+## Memory and Attachment Smoke
+
+- Memory read:
+  - `Please use the read_memory tool`
+- Memory write:
+  - `Please use write_memory with scope chat and mode append`
+- Attachment send:
+  - Ask the assistant to call `send_message` with `attachment_path` and optional `caption`.
+
+## MCP Setup
+
+Place `.mcp.json` in either:
+- `/workspace/group/.mcp.json` (inside container session)
+- `/workspace/project/.mcp.json`
+- or set `NANOCLAW_MCP_CONFIG_PATH`.
+
+At startup, the agent loads MCP servers and exposes bridged tools with names like `mcp_<server>_<tool>`.
+
+Supported server modes:
+- `runtime: "container"` + `transport: "stdio"`: launched in container runtime.
+- `runtime: "host"` + `transport: "stdio"`: launched through the Swift host MCP bridge.
+
+Example `.mcp.json`:
+
 ```json
 {
-  "api_key": "sk-your-kimi-key",
-  "model_provider": "kimi",
-  "model_name": "kimi-k2.5",
-  "timeout": 180
+  "mcpServers": {
+    "focusrelay": {
+      "runtime": "host",
+      "transport": "stdio",
+      "command": "/opt/homebrew/bin/focusrelay",
+      "args": ["serve"]
+    }
+  }
 }
 ```
 
-**Getting a Kimi API Key:**
-1. Visit https://platform.moonshot.ai/
-2. Create an account
-3. Generate API key in console
-4. Copy key (starts with `sk-`)
+After you update `.mcp.json`, new servers/tools are picked up on the next agent run. Rebuild/restart is only needed when NanoClawSwift code changes.
+For mixed host/container operations and pagination workflow, see `docs/MCP_OPERATIONS.md`.
 
-### CLI Arguments
+## FocusRelay Setup (OmniFocus on macOS Host)
+
+FocusRelay is macOS-only, so configure it as a host MCP server in `.mcp.json` and NanoClawSwift will bridge it automatically.
+
+1. Install FocusRelay on host (Homebrew):
 
 ```bash
-./nanoclaw-agent \
-  --config /workspace/config.json \
-  --group-folder myproject \
-  --chat-jid 12345@g.us \
-  --session-id optional-session-id \
-  --is-main \
-  --is-scheduled-task
+brew tap deverman/focus-relay
+brew install focusrelay
+focusrelay bridge-health-check
 ```
 
-### Web Policy Configuration
+2. Optional host env overrides:
 
-NanoClaw now uses a two-layer web policy model:
-
-- Global baseline (host-managed): `~/.config/nanoclaw/web-policy.global.json`
-- Group overlay (container-writable): `groups/<group>/.nanoclaw/web-policy.overlay.json`
-
-Use `config-examples/web-policy.global.json` as a template.
-
-### Host Latency & UX Controls
-
-`nanoclaw-host` supports runtime tuning via environment variables:
-
-- `NANOCLAW_WORKING_ACK_ENABLED` (default `true`) - enables delayed "working on it" user acknowledgement
-- `NANOCLAW_WORKING_ACK_THRESHOLD_MS` (default `8000`) - delay before emitting working acknowledgement
-- `NANOCLAW_LATENCY_WINDOW_SIZE` (default `200`) - rolling sample window for latency metrics
-- `NANOCLAW_LATENCY_SLO_P50_MS` (default `15000`) - p50 warning threshold
-- `NANOCLAW_LATENCY_SLO_P95_MS` (default `60000`) - p95 warning threshold
-- `NANOCLAW_TIMEOUT_ALERT_RATE` (default `0.05`) - warning threshold for timeout-rate
-- `NANOCLAW_RETRY_ALERT_RATE` (default `0.02`) - warning threshold for inbound retry-rate
-
-## Philosophy (Still True)
-
-**Small enough to understand.** The Swift implementation is ~2,000 lines vs 10,000+ in the original.
-
-**Secure by isolation.** Agents still run in Apple containers with filesystem isolation. Nothing runs on your Mac directly.
-
-**Built for one user.** Fork it, customize it. The codebase is small enough to be safe to modify.
-
-**Customization = code changes.** No YAML configs. Want different behavior? Edit the Swift code.
-
-**AI-native.** Claude Code guides setup and debugging.
-
-**Best harness, best model.** Now using SwiftAgents framework with your choice of model (Kimi K2.5 recommended).
-
-## What It Supports
-
-- **WhatsApp I/O** - Message your AI from your phone
-- **Multi-Model LLMs** - Kimi K2.5, OpenAI GPT-4, Anthropic Claude
-- **Isolated group context** - Each group has its own CLAUDE.md and filesystem sandbox
-- **Main channel** - Private admin channel with special privileges
-- **Scheduled tasks** - Recurring jobs with cron syntax
-- **Container isolation** - Apple containers with filesystem mounts
-- **File tools** - Read, write, edit, glob, grep files safely
-- **Bash execution** - Commands run inside container, not on host
-- **Web tools** - `web_fetch` / `web_search` via host broker (works with Tailscale exit-node routing)
-- **Group-scoped web policy** - Container can directly manage per-group overlay allowlist
-- **Strict tool-call policy** - Raw ````tool ...```` text blocks are never executed
-- **IPC communication** - Send WhatsApp messages, schedule tasks
-- **Session persistence** - Conversation history in JSON files
-- **Conversation archiving** - Automatic transcript saving
-- **Cron engine abstraction** - `CronEngineKit` library target for robust timezone-aware schedule computation
-
-## Swarm Version Note
-
-This repo currently pins `Swarm` to `0.3.1` for build stability.  
-`0.3.4` introduces a transitive `Hive` dependency path that is not consumable in this environment (`/Package.swift` resolution failure), so migration work targets Swarm-native APIs while staying on the stable pin.
-
-## Project Structure
-
-```
-nanoclawswift/
-├── Sources/NanoClawAgent/         # Swift container agent
-│   ├── NanoClawAgentCLI.swift     # CLI entry point
-│   ├── NanoClawAgent.swift        # Agent implementation
-│   ├── Configuration/             # Config loading
-│   ├── Providers/                 # LLM providers (Kimi, OpenAI)
-│   ├── Tools/                     # FileSystem, Bash, IPC, Web tools
-│   ├── Memory/                    # Session & CLAUDE.md
-│   └── Hooks/                     # Conversation archiving
-├── Sources/NanoClawHost/          # Swift host orchestrator (queue, scheduler, SQLite)
-├── Sources/CronEngineKit/         # Reusable cron parsing + next-run engine
-│   └── CronEngine.swift           # CronEngine protocol + VixieCronEngine
-├── src/
-│   ├── index.ts                   # Node channel adapters bootstrap
-│   ├── host-client.ts             # Unix socket client for nanoclaw-host
-│   └── host-relay.ts              # Host relay + web broker endpoints
-├── Tests/                         # Swift tests
-├── container/
-│   ├── Dockerfile.slim            # Swift 6.0 container
-│   └── build-swift.sh             # Build script
-├── Package.swift                  # Swift Package Manager
-└── .github/workflows/ci.yml       # CI/CD
-```
-
-## Development
-
-### Build
 ```bash
-swift build
-swift build -c release
+export NANOCLAW_FOCUSRELAY_ENABLED="true"
+export NANOCLAW_FOCUSRELAY_COMMAND="/opt/homebrew/bin/focusrelay"
 ```
 
-### Test
+3. Rebuild + restart runtime:
+
 ```bash
-swift test
+swift run nanoclaw-devctl rebuild-and-restart slim
 ```
 
-### Run
+4. Telegram smoke:
+- `Please show mcp status`
+- `Please reload mcp`
+- `What are the tasks in my inbox?`
+- `Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 10`
+- `show more` (or `show more 5` to change page size)
+
+5. Optional parity verification (FocusRelay repo vs loaded MCP tools):
+
 ```bash
-# Local development
-echo '{"prompt":"Hello"}' | swift run nanoclaw-agent --group-folder test --chat-jid test@g.us
+# Expected tool names from FocusRelay server source
+python3 - <<'PY'
+import re, pathlib
+src = pathlib.Path("/Users/deverman/Documents/Code/swift/FocusRelayMCP/Sources/FocusRelayServer/FocusRelayServer.swift").read_text()
+expected = sorted({
+    n for n in re.findall(r'name:\\s*"([a-z0-9_\\-]+)"', src)
+    if n in {
+        "list_tasks", "get_task", "list_projects", "list_tags",
+        "get_task_counts", "get_project_counts",
+        "debug_inbox_probe", "debug_inbox_probe_alt", "bridge_health_check"
+    }
+})
+print("\n".join(expected))
+PY
 
-# With container
-./container/build-swift.sh slim
-
-# Or use container CLI directly:
-container build -f container/Dockerfile.slim -t nanoclawswift-agent:slim .
-
-container run -i --rm \
-  -e MODEL_PROVIDER=openai \
-  -e MODEL_NAME=gpt-5.2 \
-  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
-  --mount type=bind,source=/tmp/test,target=/workspace/group \
-  nanoclawswift-agent:slim \
-  --config /tmp/fake.json \
-  --group-folder /workspace/group \
-  --chat-jid test@g.us
+# Loaded MCP tools from NanoClaw host bridge
+curl -sS -X POST http://127.0.0.1:18081/mcp/host/bootstrap \
+  -H 'content-type: application/json' \
+  -d @<(jq '{servers:[.mcpServers|to_entries[]|{id:.key,command:.value.command,args:(.value.args//[]),env:(.value.env//{}),cwd:(.value.cwd//"")}]} ' .mcp.json) \
+  | jq -r '.servers[] | select(.id=="focusrelay") | .tools[].name' | sort -u
 ```
 
-## Telegram E2E Smoke
+## Project Docs
 
-After `WHATSAPP_ENABLED=0 npm run dev`:
-1. DM the bot: `what tools do you have?`
-2. DM: `what is scheduled?`
-3. DM: `schedule a recurring 08:00 test task`
-4. DM: `list tasks`
-5. DM: `cancel task <id>`
-6. DM: `list tasks`
+- Implementation plan: `IMPLEMENTATION_PLAN.md`
+- Production checklist: `PRODUCTION_READINESS.md`
+- Telegram setup detail: `docs/TELEGRAM_SETUP.md`
+- Security model: `docs/SECURITY.md`
+- MCP operations: `docs/MCP_OPERATIONS.md`
+- Technical spec: `docs/SPEC.md`
+- Wax decision packet: `docs/WAX_DECISION.md`
 
-## Production Readiness
+## Explicitly Deferred
 
-See PRODUCTION_READINESS.md for:
-- Issues encountered and mitigations
-- Monitoring via GitHub CLI
-- Production checklist
-- Security hardening
-- Performance optimization
-
-## CI/CD Status
-
-[![CI](https://github.com/deverman/nanoclawswift/actions/workflows/ci.yml/badge.svg?branch=swift-agent)](https://github.com/deverman/nanoclawswift/actions/workflows/ci.yml)
-
-**Build:** Swift 6.0 on macOS  
-**Test:** Automated on every push  
-**Container:** Automatic builds  
-
-## Documentation
-
-- **Setup:** This README
-- **Migration:** MIGRATION.md
-- **Production:** PRODUCTION_READINESS.md
-- **Architecture:** IMPLEMENTATION_PLAN.md
-
-## Status
-
-**Current:** Phase 1 (Core Implementation) ✅ Complete  
-**Next:** Phase 2 (Integration Testing)  
-**Target:** Production ready by Q1 2026
-
-## License
-
-Same as original NanoClaw - see LICENSE file.
-
-## Credits
-
-- Original NanoClaw by Gavriel Cohen
-- SwiftAgents framework by Christopher Karani (repo renamed to Swarm)
-- Kimi API by Moonshot AI
-- Swift Argument Parser by Apple
+- Multi-channel runtime expansion
+- Wax as production memory backend (adapter seam exists; decision packet pending)

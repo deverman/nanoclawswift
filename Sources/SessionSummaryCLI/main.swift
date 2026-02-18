@@ -53,7 +53,7 @@ struct SessionSummaryCLI: ParsableCommand {
 
         print("Session summary for group: \(groupFolder)")
         if let sinceDate {
-            print("Since: \(isoFormatter.string(from: sinceDate))")
+            print("Since: \(makeISOFormatter().string(from: sinceDate))")
         }
         print("Turns analyzed: \(turns.count)")
         print("Turns with tool/runtime errors: \(withErrors.count)")
@@ -73,24 +73,24 @@ struct SessionSummaryCLI: ParsableCommand {
     }
 }
 
-private let isoFormatter: ISO8601DateFormatter = {
+private func makeISOFormatter() -> ISO8601DateFormatter {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter
-}()
+}
 
-private let isoFormatterNoFractional: ISO8601DateFormatter = {
+private func makeISOFormatterNoFractional() -> ISO8601DateFormatter {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime]
     return formatter
-}()
+}
 
 private func parseSinceDate(_ raw: String?) -> Date? {
     guard let raw, !raw.isEmpty else { return nil }
-    if let withFractional = isoFormatter.date(from: raw) {
+    if let withFractional = makeISOFormatter().date(from: raw) {
         return withFractional
     }
-    return isoFormatterNoFractional.date(from: raw)
+    return makeISOFormatterNoFractional().date(from: raw)
 }
 
 private func shortText(_ value: String, max: Int = 80) -> String {
@@ -153,7 +153,7 @@ private func loadTurns(from archiveDir: URL, since: Date?) throws -> [TurnSummar
             ?? String(file.lastPathComponent.prefix(20))
 
         if let since,
-           let turnDate = isoFormatter.date(from: timestamp) ?? isoFormatterNoFractional.date(from: timestamp),
+           let turnDate = makeISOFormatter().date(from: timestamp) ?? makeISOFormatterNoFractional().date(from: timestamp),
            turnDate < since {
             continue
         }

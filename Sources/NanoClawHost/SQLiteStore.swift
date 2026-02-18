@@ -240,15 +240,23 @@ final class SQLiteStore {
         }
     }
 
-    func enqueueOutbound(channel: String, chatJID: String, text: String) throws -> String {
+    func enqueueOutbound(
+        channel: String,
+        chatJID: String,
+        text: String,
+        kind: String = "text",
+        attachmentPath: String? = nil,
+        caption: String? = nil
+    ) throws -> String {
         let messageID = "out-\(Int(Date().timeIntervalSince1970 * 1000))-\(UUID().uuidString.prefix(8))"
         try dbQueue.write { db in
             try db.execute(
                 sql: """
-                INSERT INTO outbound_messages(id, channel, chat_jid, text, status, created_at)
-                VALUES (?, ?, ?, ?, 'pending', ?);
+                INSERT INTO outbound_messages(
+                  id, channel, chat_jid, text, kind, attachment_path, caption, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?);
                 """,
-                arguments: [messageID, channel, chatJID, text, isoNow()]
+                arguments: [messageID, channel, chatJID, text, kind, attachmentPath, caption, isoNow()]
             )
         }
         return messageID
@@ -257,21 +265,16 @@ final class SQLiteStore {
     func claimOutbound(channel: String, maxCount: Int) throws -> [OutboundMessageRow] {
         let clampedMax = max(1, min(maxCount, 50))
         return try dbQueue.write { db in
-            // Recover stale claims so transient adapter failures don't strand messages forever.
-            let reclaimBefore = isoDate(offsetSeconds: -outboundClaimLeaseSeconds)
-            try db.execute(
-                sql: """
-                UPDATE outbound_messages
-                SET status = 'pending', sent_at = NULL
-                WHERE channel = ? AND status = 'claimed' AND sent_at IS NOT NULL AND sent_at <= ?;
-                """,
-                arguments: [channel, reclaimBefore]
+            _ = try reclaimStaleClaimedOutbound(
+                db: db,
+                channel: channel,
+                olderThanSeconds: Int(outboundClaimLeaseSeconds)
             )
 
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT id, channel, chat_jid, text, status, created_at, sent_at
+                SELECT id, channel, chat_jid, text, kind, attachment_path, caption, status, created_at, sent_at
                 FROM outbound_messages
                 WHERE channel = ? AND status = 'pending'
                 ORDER BY created_at
@@ -297,6 +300,18 @@ final class SQLiteStore {
             }
 
             return rows.map(mapOutboundMessage)
+        }
+    }
+
+    @discardableResult
+    func reclaimStaleClaimedOutbound(channel: String? = nil, olderThanSeconds: Int) throws -> Int {
+        let clampedAge = max(1, olderThanSeconds)
+        return try dbQueue.write { db in
+            try reclaimStaleClaimedOutbound(
+                db: db,
+                channel: channel,
+                olderThanSeconds: clampedAge
+            )
         }
     }
 
@@ -378,6 +393,26 @@ final class SQLiteStore {
                        next_run, status, created_at
                 FROM scheduled_tasks
                 WHERE id = ?;
+                """,
+                arguments: [taskID]
+            ) else {
+                return nil
+            }
+            return mapScheduledTask(row)
+        }
+    }
+
+    func getTaskCaseInsensitive(taskID: String) throws -> ScheduledTaskRow? {
+        try dbQueue.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT id, group_folder, chat_jid, prompt, schedule_type, schedule_value,
+                       COALESCE(context_mode, 'isolated') AS context_mode,
+                       next_run, status, created_at
+                FROM scheduled_tasks
+                WHERE id = ? COLLATE NOCASE
+                LIMIT 1;
                 """,
                 arguments: [taskID]
             ) else {
@@ -526,6 +561,9 @@ final class SQLiteStore {
                   channel TEXT NOT NULL,
                   chat_jid TEXT NOT NULL,
                   text TEXT NOT NULL,
+                  kind TEXT NOT NULL DEFAULT 'text',
+                  attachment_path TEXT,
+                  caption TEXT,
                   status TEXT NOT NULL,
                   created_at TEXT NOT NULL,
                   sent_at TEXT
@@ -583,6 +621,10 @@ final class SQLiteStore {
 
             // Existing stores may have scheduled_tasks without context_mode.
             try? db.execute(sql: "ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated';")
+            // Existing stores may not have attachment-related outbound columns.
+            try? db.execute(sql: "ALTER TABLE outbound_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text';")
+            try? db.execute(sql: "ALTER TABLE outbound_messages ADD COLUMN attachment_path TEXT;")
+            try? db.execute(sql: "ALTER TABLE outbound_messages ADD COLUMN caption TEXT;")
         }
     }
 
@@ -711,11 +753,43 @@ final class SQLiteStore {
         return SessionRow(scopeKey: scopeKey, sessionID: sessionID, updatedAt: updatedAt)
     }
 
+    @discardableResult
+    private func reclaimStaleClaimedOutbound(
+        db: Database,
+        channel: String?,
+        olderThanSeconds: Int
+    ) throws -> Int {
+        let reclaimBefore = isoDate(offsetSeconds: -TimeInterval(olderThanSeconds))
+        if let channel {
+            try db.execute(
+                sql: """
+                UPDATE outbound_messages
+                SET status = 'pending', sent_at = NULL
+                WHERE channel = ? AND status = 'claimed' AND sent_at IS NOT NULL AND sent_at <= ?;
+                """,
+                arguments: [channel, reclaimBefore]
+            )
+        } else {
+            try db.execute(
+                sql: """
+                UPDATE outbound_messages
+                SET status = 'pending', sent_at = NULL
+                WHERE status = 'claimed' AND sent_at IS NOT NULL AND sent_at <= ?;
+                """,
+                arguments: [reclaimBefore]
+            )
+        }
+        return Int(db.changesCount)
+    }
+
     private func mapOutboundMessage(_ row: Row) -> OutboundMessageRow {
         let id: String = row["id"]
         let channel: String = row["channel"]
         let chatJID: String = row["chat_jid"]
         let text: String = row["text"]
+        let kind: String = row["kind"]
+        let attachmentPath: String? = row["attachment_path"]
+        let caption: String? = row["caption"]
         let status: String = row["status"]
         let createdAt: String = row["created_at"]
         let sentAt: String? = row["sent_at"]
@@ -724,6 +798,9 @@ final class SQLiteStore {
             channel: channel,
             chatJID: chatJID,
             text: text,
+            kind: kind,
+            attachmentPath: attachmentPath,
+            caption: caption,
             status: status,
             createdAt: createdAt,
             sentAt: sentAt

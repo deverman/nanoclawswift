@@ -1,3 +1,13 @@
+/**
+ * DEPRECATED TRANSITIONAL ENTRYPOINT
+ *
+ * Runtime control has moved to Swift host CLI:
+ *   - swift run nanoclaw-hostctl restart --foreground
+ *
+ * Keep this file only for temporary reference during Swift-only cleanup.
+ * Do not add new runtime behavior here.
+ */
+
 import type { WASocket } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { spawn, execSync } from 'child_process';
@@ -15,9 +25,7 @@ import {
   HOST_STARTUP_TIMEOUT_MS
 } from './config.js';
 import { postInboundEvent, claimOutbound, ackOutbound, hostHealth, type HostInboundEvent } from './host-client.js';
-import { startTelegramBot, stopTelegramBot, sendTelegramMessage } from './telegram-bot.js';
 import { startHostRelay, stopHostRelay } from './host-relay.js';
-import { Bot } from 'grammy';
 
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
@@ -25,14 +33,12 @@ const logger = pino({
 });
 
 let sock: WASocket | null = null;
-let telegramBot: Bot | null = null;
 let hostProcess: ReturnType<typeof spawn> | null = null;
 let relayStarted = false;
 let shuttingDown = false;
 let whatsappConnecting = false;
 
-const outboundLoopStarted: Record<string, boolean> = {
-  telegram: false,
+const outboundLoopStarted: Record<'whatsapp', boolean> = {
   whatsapp: false
 };
 
@@ -198,7 +204,7 @@ async function forwardInboundEvent(event: HostInboundEvent): Promise<void> {
 }
 
 async function startOutboundLoop(
-  channel: 'telegram' | 'whatsapp',
+  channel: 'whatsapp',
   deliver: (chatJid: string, text: string) => Promise<void>
 ): Promise<void> {
   if (outboundLoopStarted[channel]) return;
@@ -341,16 +347,7 @@ async function main(): Promise<void> {
   ensureContainerSystemRunning();
   await ensureRelayEnvironmentConfigured();
   await ensureHostRunning();
-
-  telegramBot = await startTelegramBot(async (event) => {
-    await forwardInboundEvent(event);
-  });
-  if (telegramBot) {
-    await startOutboundLoop('telegram', async (chatJid, text) => {
-      if (!telegramBot) throw new Error('Telegram bot not ready');
-      await sendTelegramMessage(telegramBot, chatJid, text);
-    });
-  }
+  logger.info('Telegram inbound/outbound delivery is handled by Swift host transport');
 
   if (WHATSAPP_ENABLED) {
     await connectWhatsApp();
@@ -365,11 +362,6 @@ async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info('Shutting down NanoClaw adapters');
-
-  if (telegramBot) {
-    await stopTelegramBot(telegramBot);
-    telegramBot = null;
-  }
 
   if (sock) {
     try {

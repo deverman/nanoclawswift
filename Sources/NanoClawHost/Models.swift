@@ -1,5 +1,17 @@
 import Foundation
 
+struct InboundAttachment: Codable, Sendable {
+    let kind: String
+    let telegramFileID: String?
+    let telegramFileUniqueID: String?
+    let width: Int?
+    let height: Int?
+    let fileSize: Int?
+    let mimeType: String?
+    let localPath: String?
+    let ocrText: String?
+}
+
 struct InboundEventRequest: Codable, Sendable {
     let channel: String
     let chat_jid: String
@@ -9,6 +21,29 @@ struct InboundEventRequest: Codable, Sendable {
     let timestamp: String
     let message_id: String
     let is_direct: Bool
+    let attachments: [InboundAttachment]?
+
+    init(
+        channel: String,
+        chat_jid: String,
+        sender: String,
+        sender_name: String,
+        content: String,
+        timestamp: String,
+        message_id: String,
+        is_direct: Bool,
+        attachments: [InboundAttachment]? = nil
+    ) {
+        self.channel = channel
+        self.chat_jid = chat_jid
+        self.sender = sender
+        self.sender_name = sender_name
+        self.content = content
+        self.timestamp = timestamp
+        self.message_id = message_id
+        self.is_direct = is_direct
+        self.attachments = attachments
+    }
 }
 
 struct InboundEventResponse: Codable, Sendable {
@@ -26,6 +61,9 @@ struct OutboundMessageDTO: Codable, Sendable {
     let id: String
     let chat_jid: String
     let text: String
+    let kind: String?
+    let attachment_path: String?
+    let caption: String?
     let created_at: String
 }
 
@@ -74,6 +112,9 @@ struct OutboundMessageRow: Sendable {
     let channel: String
     let chatJID: String
     let text: String
+    let kind: String
+    let attachmentPath: String?
+    let caption: String?
     let status: String
     let createdAt: String
     let sentAt: String?
@@ -132,6 +173,7 @@ struct QueueJob: Sendable {
     let messageID: String
     let group: RegisteredGroupRow
     let isScheduledTask: Bool
+    let isStartupCatchUp: Bool
     let scheduledTaskID: String?
     let contextMode: String
     let enqueuedAt: Date

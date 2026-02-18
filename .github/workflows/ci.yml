@@ -13,6 +13,9 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+
+    - name: Docs consistency check
+      run: ./scripts/check-docs-consistency.sh
       
     - name: Verify Swift Version
       run: swift --version
@@ -52,9 +55,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Build container (slim)
-      run: |
-        cd container
-        ./build-swift.sh slim
+      run: swift run nanoclaw-devctl build-agent-image slim
         
     - name: Test container runtime smoke checks
       run: |

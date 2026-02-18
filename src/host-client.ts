@@ -1,3 +1,10 @@
+/**
+ * DEPRECATED TRANSITIONAL MODULE
+ *
+ * Swift host runtime is the source of truth. Keep this only as temporary
+ * compatibility/reference code during Swift-only cleanup.
+ */
+
 import http from 'http';
 
 import { HOST_SOCKET_PATH, HOST_REQUEST_TIMEOUT_MS } from './config.js';

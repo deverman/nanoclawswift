@@ -50,6 +50,7 @@ private func makeJob(requestID: String, groupFolder: String) -> QueueJob {
         messageID: requestID,
         group: makeGroup(groupFolder),
         isScheduledTask: false,
+        isStartupCatchUp: false,
         scheduledTaskID: nil,
         contextMode: "group",
         enqueuedAt: Date()

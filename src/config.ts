@@ -1,3 +1,10 @@
+/**
+ * DEPRECATED TRANSITIONAL MODULE
+ *
+ * Swift runtime config loading is canonical. This remains only for
+ * temporary TypeScript compatibility utilities.
+ */
+
 import path from 'path';
 
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'Andy';

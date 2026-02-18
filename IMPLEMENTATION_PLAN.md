@@ -1,405 +1,302 @@
-# NanoClawSwift Implementation Plan
-
-**Repository**: https://github.com/deverman/nanoclawswift  
-**Base**: https://github.com/gavrielc/nanoclaw  
-**Branch**: swift-agent  
-**Status**: Big-bang migration execution is complete on the single Swift-host runtime path. Swift host orchestrator is active, long-running container daemon mode is running, GRDB is integrated, cron scheduling runs through `CronEngineKit`, relay/web-broker parity is restored, and Telegram E2E checks are passing on the cutover path.
-
-## Big-Bang Migration Tracker (Authoritative)
-
-This section is the source of truth for the current cutover status.
-
-### Completed
-- [x] Added Swift host runtime (`nanoclaw-host`) with Unix socket API:
-  - `POST /v1/events/inbound`
-  - `POST /v1/outbound/claim`
-  - `POST /v1/outbound/ack`
-  - `GET /v1/health`
-- [x] Implemented Swift `GroupQueue` with one worker per group and global concurrency cap.
-- [x] Implemented long-running container sessions via `ContainerSessionManager`.
-- [x] Added container daemon mode in `NanoClawAgentCLI` (`--daemon`) with mounted IPC request/response protocol.
-- [x] Cut Node runtime to channel adapters + host client (`src/host-client.ts`).
-- [x] Moved host state to Swift + SQLite (GRDB) in `Sources/NanoClawHost/SQLiteStore.swift`.
-- [x] Added inbound dedupe (`channel + chat_jid + message_id`) to prevent reconnect duplicate replies.
-- [x] Added outbound claim lease recovery to avoid stuck claimed messages.
-- [x] Added new test suites:
-  - `Tests/NanoClawHostTests/*`
-  - `Tests/CronEngineKitTests/*`
-- [x] Added standalone cron package-style library target `CronEngineKit` and wired host scheduler to it.
-- [x] Restored host relay + web broker parity on the cutover path (`src/host-relay.ts` + adapter bootstrap wiring in `src/index.ts`) so `BASE_URL`/`NANOCLAW_WEB_BROKER_URL` are configured before host startup.
-
-### In Progress
-- [ ] Full `docs/SPEC.md` rewrite to remove legacy historical sections that still describe pre-cutover internals.
-
-### Completed (Recent)
-- [x] Node dependency cleanup for removed orchestration components:
-  - removed `better-sqlite3`, `cron-parser`, `zod`, and `@types/better-sqlite3` from `package.json`.
-  - refreshed `package-lock.json` to remove corresponding lock entries.
-- [x] Dependency cleanup verification:
-  - repository dependency manifests no longer reference removed packages (`better-sqlite3`, `cron-parser`, `zod`, `@types/better-sqlite3`).
-  - source tree has no imports/usages of removed Node orchestration packages.
-  - note: local `node_modules` still contains extraneous leftovers from historical installs; `npm prune` attempted on 2026-02-12 but network/DNS failure prevented clean pruning in this environment.
-- [x] Started documentation cutover updates for the new runtime path:
-  - refreshed architecture and bring-up guidance in `README.md`.
-  - updated `docs/HANDOVER.md` and `docs/TELEGRAM_STATUS.md` to reference `nanoclaw-host` + `src/host-relay.ts`/`src/index.ts`.
-  - added explicit legacy warning in `docs/SPEC.md` until full spec refresh is completed.
-- [x] Added local dev/runtime artifact ignore rules in `.gitignore`:
-  - `groups/*/logs/`, `groups/*/.nanoclaw/`, `groups/telegram-direct/`, `groups/test-swift/`, and `/1`.
-
-### Next Steps (Execution Order)
-1. Finish `docs/SPEC.md` full rewrite for post-cutover architecture only.
-2. Run Telegram E2E regression checklist on the cutover path:
-   - DM prompt-response
-   - schedule/list/cancel across restart
-   - duplicate inbound replay check
-   - timeout/retry behavior
-3. Keep performance backlog items for subsequent iteration (no migration rollback work required).
-
-### Performance Backlog (2026-02-12)
-
-Observed timings for prompt `what is the latest vision pro?`:
-- Inbound event received at `2026-02-12T03:12:36Z` (`inbound_events.message_id=227`).
-- Long-running container session started at `11:12:36` local (same second as inbound).
-- First web-broker policy access at `11:12:43` local (`Web policy global file not found` warning indicates first web tool call).
-- Outbound response created at `2026-02-12T03:13:52Z`.
-- End-to-end latency was ~76 seconds.
-
-Interpretation:
-- Primary previous failure cause (fixed): agent default timeout was 60 seconds when `TIMEOUT` env was unset.
-- Current latency bottleneck is not a hard timeout; it is mostly run-time latency from cold session startup + multi-step tool/LLM turn for web retrieval and synthesis.
-
-Backlog items:
-- [x] Add per-stage latency instrumentation and persistence (host logs now emit queue wait + stage durations):
-  - queue wait
-  - container warm/cold start time
-  - each tool call duration
-  - each provider inference duration
-  - final render/send duration
-- [x] Add structured host logs for request lifecycle with `request_id` correlation across:
-  - inbound event
-  - queue dequeue
-  - container dispatch
-  - tool execution
-  - outbound enqueue
-- [x] Optimize web tool payload size before model synthesis:
-  - default HTML-to-text extraction
-  - cap and summarize tool outputs before passing full page content to the model
-  - targeted extraction of title/meta/headings/paragraphs for web pages
-- [x] Add warm-session policy for active groups:
-  - proactively start/keep alive most active groups on host boot (`NANOCLAW_PREWARM_GROUP_SESSIONS`, `NANOCLAW_PREWARM_LIMIT`)
-  - avoid first-message cold start penalty (verified in startup logs for `telegram-direct`)
-- [x] Add latency SLO and alert thresholds:
-  - host health now exposes `response_p50_ms`, `response_p95_ms`, `timeout_rate`, `retry_rate`, and `completed_jobs`
-  - host emits periodic SLO warning logs when thresholds are breached (`NANOCLAW_LATENCY_SLO_P50_MS`, `NANOCLAW_LATENCY_SLO_P95_MS`, `NANOCLAW_TIMEOUT_ALERT_RATE`, `NANOCLAW_RETRY_ALERT_RATE`)
-- [x] Add user-facing “working” ack policy when runtime exceeds threshold (for example >8s) to improve UX during long web-assisted runs.
-  - host now enqueues delayed ack after `NANOCLAW_WORKING_ACK_THRESHOLD_MS` (default `8000`) with `NANOCLAW_WORKING_ACK_ENABLED` control
-- [ ] Rewrite web payload optimization path in Swift host runtime (replace Node regex extraction with Swift-native parser utility):
-  - target: move HTML extraction/summarization from `src/host-relay.ts` into Swift host service
-  - evaluate `SwiftSoup` first; if needed, wrap parser behind a small `WebContentExtractor` protocol for future engine swap
-  - keep existing broker response contract stable (`contentFormat`, truncation flags, redirect/policy behavior)
-
-## Current Progress
-
-### ✅ Phase 0: Foundation & CI/CD (COMPLETE)
-
-#### ✅ Step 0.1: Repository Setup
-- [x] Fork repository from gavrielc/nanoclaw to deverman/nanoclawswift
-- [x] Clone the forked repository locally
-- [x] Create and switch to swift-agent branch
-- [x] Verify clean working directory
-
-#### ✅ Step 0.2: Swift Package Structure
-- [x] Create Package.swift with dependencies:
-  - SwiftAgents 0.3.1 (EXACT VERSION - PINNED, sourced from `Swarm.git`)
-  - swift-argument-parser 1.5.0+
-  - swift-configuration 1.0.2+
-- [x] Create Sources/NanoClawAgent/ directory structure
-- [x] Create Tests/NanoClawAgentTests/ directory
-- [x] Add placeholder main.swift
-- [x] Add placeholder test file
-
-#### ✅ Step 0.3: CI/CD Pipeline
-- [x] Create .github/workflows/ci.yml
-- [x] Configure Swift setup (version 6.2.3)
-- [x] Add build step
-- [x] Add test step
-- [x] Add container build step
-- [x] Push to GitHub (origin swift-agent)
-- [x] Verify repository is accessible via gh CLI
-
-#### ✅ Step 0.4: Container Setup
-- [x] Create container/Dockerfile.slim (swift:6.2.3-slim)
-- [x] Create container/build-swift.sh script
-- [x] Make scripts executable
-- [x] Install Swift Static Linux SDK (aarch64-swift-linux-musl)
-- [x] Build Linux release binary with SDK
-- [x] Stage Linux binary for container build
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           HOST (macOS)                                  │
-│  ┌──────────────────────┐    Unix socket HTTP     ┌──────────────────┐ │
-│  │ Node channel adapters │  ───────────────────▶   │ Swift host        │ │
-│  │ Telegram + WhatsApp   │                         │ (nanoclaw-host)   │ │
-│  │ outbound claim/ack    │  ◀───────────────────   │ queue/scheduler/DB│ │
-│  └──────────────────────┘                          └────────┬─────────┘ │
-│                                                              │           │
-│                                      mounted IPC files       │           │
-│                                      (request/response)      ▼           │
-├─────────────────────────────────────────────────────────────────────────┤
-│                      APPLE CONTAINER (Linux VM)                         │
-│  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │                    nanoclaw-agent (Swift Binary)                  │  │
-│  │                                                                   │  │
-│  │  ┌─────────────────────────────────────────────────────────────┐ │  │
-│  │  │ NanoClawAgent (ToolCallingAgent runtime)                    │ │  │
-│  │  │ ├─ structured tool-call execution only                      │ │  │
-│  │  │ ├─ File, Bash, IPC, Web tools                               │ │  │
-│  │  │ ├─ CLAUDEMemory + per-group session state                   │ │  │
-│  │  │ └─ daemon mode processing mounted IPC requests              │ │  │
-│  │  └─────────────────────────────────────────────────────────────┘ │  │
-│  │                                                                   │  │
-│  └───────────────────────────────────────────────────────────────────┘  │
-│                                                                         │
-│  Mounts:                                                                │
-│    • groups/{group}/ → /workspace/group                                 │
-│    • store/runtime/{group}/ipc → /workspace/ipc                         │
-│    • store/sessions/{group}/.claude → /home/nanoclaw/.claude            │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-## Implementation Checklist
-
-### Phase 0: Foundation & CI/CD (Shift-Left) ✅ COMPLETE
-
-### Phase 1: Core Infrastructure (IN PROGRESS)
-
-#### Step 1.1: Type-Safe Configuration
-- [x] Create Configuration/ModelProvider.swift (enum: kimi, openai, anthropic)
-- [x] Create Configuration/ModelName.swift (enum with all model variants)
-- [x] Create Configuration/NanoClawConfig.swift (struct with Codable)
-- [x] Create Configuration/ConfigLoader.swift (manual JSON + env var loading)
-- [x] **FIXED:** Changed from "API_KEY" to "MOONSHOT_API_KEY" to match your env
-- [x] Write tests for config loading
-
-#### Step 1.2: Async CLI
-- [x] Create NanoClawAgentCLI.swift with AsyncParsableCommand
-- [x] Implement argument parsing
-- [x] Implement stdin reading
-- [x] Add output markers (---NANOCLAW_OUTPUT_START--- / END)
-- [x] Write tests for CLI parsing
-
-#### Step 1.3: OpenAI-Compatible Provider ✅
-- [x] Create Providers/OpenAICompatibleProvider.swift
-- [x] Implement InferenceProvider protocol
-- [x] Implement chat completion request/response
-- [x] Implement error handling
-- [x] **RETRY LOGIC WITH EXPONENTIAL BACKOFF** - Implemented for 429 errors:
-  - Max 5 retries with exponential backoff (1s, 2s, 4s, 8s, 16s)
-  - Total max wait: 31 seconds before giving up
-  - Logs each retry attempt with timing
-  - Only retries on HTTP 429 (rate limit/overloaded)
-- [ ] Write unit tests (pending)
-
-### Phase 2: File-Based Session Persistence ✅ COMPLETE
-- [x] Create FileBasedSession with JSON persistence
-- [x] **FIXED:** Support both container and local paths (absolute paths starting with "/")
-- [x] Secure file permissions
-- [x] Write tests
-- [x] Verified working in Apple Containers
-
-### Phase 3: Tools Implementation 🔄
-- [x] FileSystem tools (Read, Write, Edit, Glob, Grep)
-- [x] BashTool
-- [x] IPC Tools
-- [x] Write tests
-
-### Phase 4: Agent Assembly 🔄
-- [x] CLAUDEMemory
-- [x] NanoClawAgent
-- [x] ArchivingHooks (with local path support)
-- [x] Write integration tests (tool-call loop)
-
-### Phase 5: Web Tools ✅ COMPLETE
-- [x] Host web broker (`/web/fetch`, `/web/search`, `/web/policy/list`) with allow/deny enforcement
-- [x] Global + group overlay web policy model
-- [x] Swift tools: `web_fetch`, `web_search`, `web_policy_add_domain`, `web_policy_remove_domain`, `web_policy_list`
-- [x] Group overlay persistence in `groups/{group}/.nanoclaw/web-policy.overlay.json`
-- [x] Test coverage for web policy overlay tools
-- [x] Rebuild `nanoclawswift-agent:slim` from current sources and verify tool availability in-container
-
-## Retry Logic Implementation
-
-### Exponential Backoff for 429 Errors
-
-**Location:** `OpenAICompatibleProvider.swift`
-
-**Behavior:**
-- Detects HTTP 429 (rate limited / engine overloaded)
-- Retries up to 5 times with exponential backoff
-- Delays: 1s → 2s → 4s → 8s → 16s
-- Total max delay: 31 seconds
-- Logs each retry: `[OpenAICompatibleProvider] Rate limited (429), attempt N/5. Retrying in X.Xs...`
-
-**Configuration:**
-```swift
-public init(
-    apiKey: String,
-    baseURL: String,
-    model: String,
-    timeout: Int = 180,
-    maxRetries: Int = 5,      // Configurable
-    baseDelay: Double = 1.0   // Configurable
-)
-```
-
-**Why This Matters:**
-Kimi API frequently returns 429 (overloaded) during peak times. Without retry logic, requests fail immediately. With retry logic, the agent waits and retries, significantly improving success rates.
-
-## Environment Variables
-
-### Required (choose at least one provider)
-- `OPENAI_API_KEY` - OpenAI API key (recommended)
-- `MOONSHOT_API_KEY` - Kimi API key (starts with sk-)
-- `ANTHROPIC_API_KEY` - Anthropic API key
-
-### Optional
-- `MODEL_PROVIDER` - "kimi" (default), "openai", or "anthropic"
-- `MODEL_NAME` - Model to use (e.g., "kimi-k2.5")
-- `NANOCLAW_BASE_PATH` - Base path for group folders (default: "/workspace/group")
-- `WEB_POLICY_GLOBAL_PATH` - Host global web policy path (default `~/.config/nanoclaw/web-policy.global.json`)
-- `WEB_BROKER_PORT` - Host relay/web broker port (default `18081`)
-- `WEB_FETCH_TIMEOUT_MS` - Default broker timeout (default `30000`)
-- `WEB_FETCH_MAX_BYTES` - Default max response bytes (default `1048576`)
-
-## Local Testing (No WhatsApp Required)
-
-You can test the agent locally via CLI:
-
-```bash
-export MODEL_PROVIDER=openai
-export MODEL_NAME=gpt-5.2
-export OPENAI_API_KEY=...your_key...
-export NANOCLAW_BASE_PATH=/tmp/test-group
-
-mkdir -p /tmp/test-group
-
-echo '{"prompt":"What is 2+2?"}' | \
-  ./.build/debug/nanoclaw-agent --config /tmp/fake.json --group-folder /tmp/test-group --chat-jid test@g.us
-
-echo "Hello" > /tmp/test-group/hello.txt
-echo '{"prompt":"Read the file hello.txt"}' | \
-  ./.build/debug/nanoclaw-agent --config /tmp/fake.json --group-folder /tmp/test-group --chat-jid test@g.us
-```
-
-## Testing Status
-
-**✅ Working:**
-- Build on macOS 26 (Tahoe) with Swift 6.2.3
-- Apple Containers (tested with ubuntu + swift base)
-- API key loading from environment
-- OpenAI API calls (GPT-5.2) successful
-- Retry logic with exponential backoff (429 handling)
-- Local path support (absolute paths)
-- CLI argument parsing (no duplicate flags)
-- Tool calling verified (ReadTool, WriteTool, BashTool via OpenAI)
-- Container networking with `--dns 8.8.8.8`
-- Tailscale/`utun` default-route environments auto-switch to host relay path for LLM calls
-- Node.js orchestration spawns Swift agent
-- File tools work in Apple Containers
-- Local CLI test suite passes (test-local.sh)
-- `swift test` passing (13 tests: CLI/config/tools/session/tool-call integration, pseudo-tool rejection, schedule/cancel IPC persistence, web policy tool coverage)
-- `npm run typecheck` and `npm run build` passing
-- `npm run container:smoke` passing (image inspect, metadata list, `--env-file` + `-i` runtime)
-- `npm run container:netcheck` passing (default route + DNS + container egress diagnostics)
-- **Telegram Integration** (grammY library):
-  - Direct message support (DMs without @Andy trigger)
-  - Owner-only security (TELEGRAM_OWNER_ID)
-  - Auto-creates `telegram-direct` folder
-  - Runs alongside WhatsApp (dual channel support)
-
-**⏳ Pending:**
-- End-to-end WhatsApp integration test
-- Comprehensive unit test coverage
-- Production deployment validation
-
-## Known Issues
-
-1. **Kimi API Overloaded** - Getting 429 errors consistently. Retry logic implemented to handle this.
-2. **E2E Channel Validation Pending** - Full WhatsApp end-to-end flow still needs live validation.
-3. **Local Container Metadata Drift Can Recur** - Stale digest refs in local `container` state can break image-management commands.
-
-## Release Blockers (Must Fix Before Release)
-
-### ✅ FIXED - Container Build + Run
-- **Cross-compilation**: Swift binary built for Linux using Static Linux SDK
-- **Container image**: `nanoclawswift-agent:static` built successfully
-- **Base image**: Uses `swift:6.2.3-slim` (has CA certificates pre-installed)
-
-### ✅ FIXED - Node.js Integration
-- Node runtime now acts as channel adapters only (`src/index.ts`, `src/telegram-bot.ts`)
-- Swift host (`nanoclaw-host`) owns queueing, scheduling, sessions, and container lifecycle
-- Host relay/web broker (`src/host-relay.ts`) provides:
-  - provider relay path (`/relay/{provider}/v1`)
-  - web policy-enforced broker endpoints (`/web/*`)
-- Startup resilience added:
-  - relay conflict diagnosis for `EADDRINUSE` on `:18081`
-  - clear operational recovery (`lsof` + terminate stale listener + restart)
-
-### ✅ FIXED - Kimi request compatibility
-- `OpenAICompatibleProvider` now normalizes temperature for Moonshot/Kimi requests.
-- Kimi models that only accept `temperature=1` no longer fail with HTTP 400.
-- Validation completed via Telegram E2E after rebuild/restart.
-
-### ✅ MITIGATED - Local container image metadata mismatch
-**Observed**: host-level stale digest refs caused `container image ls` failures.
-
-**Mitigation performed**:
-- Backed up local state file.
-- Removed stale references for `docker.io/library/swift:6.2.3*`.
-- Restarted `container` services.
-
-**Validation**:
-- `container image ls` succeeds.
-- `container run --rm docker.io/alpine:3.20 echo ok` succeeds.
-- `container run -i --env-file ...` correctly injects env vars on container 0.9.0.
-
-### 🔄 REMAINING - Test Coverage
-- [ ] End-to-end WhatsApp integration test
-- [ ] Add comprehensive unit tests
-- [ ] Production deployment validation
-
-### ✅ Deployment Gate Completed
-- [x] Pull/update builder base image: `docker.io/library/swift:6.2.3-slim`
-- [x] Rebuild runtime image: `./container/build-swift.sh slim`
-- [x] Confirm runtime behavior after rebuild via Telegram DM flows
-- [x] Verify tool availability in-container (`web_fetch`/`web_search`/`web_policy_*`)
-
-## Offline-Mode Checklist (Can Continue Without Image Pull)
-
-- [x] Type safety and compile checks: `npm run typecheck`, `npm run build`
-- [x] Swift tests and tool tests passing: `swift test`
-- [x] Container runtime smoke checks: `npm run container:smoke`
-- [x] Container/VPN diagnostics: `npm run container:netcheck`
-- [x] Relay reliability improvement applied in `src/host-relay.ts` with shared upstream keep-alive agents
-- [x] Documentation and handover updated for Tailscale/relay behavior and web policy architecture
-- [x] Final rebuilt-image E2E (Telegram) completed
-
-## Next Steps
-
-1. **Mac mini bring-up**: follow the runbook in `README.md` ("Mac Mini Bring-Up (Telegram First)").
-2. **Resilience**: add optional guarded auto-remediation for stale local image metadata when preflight detects digest drift.
-3. **Observability**: emit structured preflight metrics/events for image inspect and metadata checks.
-4. **Production Rollout Gate**: collect baseline performance/latency metrics before production cutover.
-
-## Notes
-
-- Kimi API is OpenAI-compatible: https://api.moonshot.ai/v1/chat/completions
-- Retry logic is essential for production use due to frequent 429 errors
-- File operations use Foundation FileManager (battle-tested)
-- All file permissions follow security best practices
-- SwiftAgents fork only as last resort
-- Swarm migration is phased: dependency source aligned to `Swarm.git` while keeping SwiftAgents 0.3.1 API surface
+# NanoClawSwift Implementation Plan (Swift-First)
+
+Updated: 2026-02-18
+
+## Summary
+
+This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, with Telegram-first scope and MCP before any multi-channel expansion.
+
+## Locked Decisions
+
+1. Runtime behavior is implemented in Swift targets first.
+2. Telegram is the only active channel in this phase.
+3. No feature flags for this migration.
+4. Swift Testing (`import Testing`) is required for regression coverage.
+5. Configuration/env access in Swift uses `swift-configuration` patterns.
+6. MCP completion is prioritized before multi-channel expansion.
+7. `write_memory` is side-effectful and follows approval/idempotency controls.
+8. `TELEGRAM_OWNER_ID` remains required for owner-gated direct message access.
+
+## Current Loop Profile (Balanced Default)
+
+- Tool route max iterations: `16`
+- Plan route max iterations: `40`
+- Hard ceiling: `60`
+- Tool-call budgets: tool `16`, plan `40`
+- Session compaction thresholds: `40/20`
+- Empty-visible-reply retry guard: one retry
+
+## Phase 0: Documentation Realignment
+
+### Scope
+
+- Rewrite active docs:
+  - `README.md`
+  - `IMPLEMENTATION_PLAN.md`
+  - `PRODUCTION_READINESS.md`
+  - `docs/TELEGRAM_SETUP.md`
+  - `docs/SECURITY.md`
+- Rewrite legacy docs to remove contradictory runtime guidance:
+  - `docs/SPEC.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/TELEGRAM_STATUS.md`
+  - `docs/HANDOVER.md`
+- Add CI docs consistency guard for stale patterns.
+
+### Status
+
+- [x] Active docs rewritten to Swift-first runtime truth
+- [x] Legacy docs rewritten to remove deprecated runtime contradictions
+- [x] CI stale-pattern guard added for active docs
+
+## Phase 1: Memory Tools + Wax-Ready Abstraction
+
+### Scope
+
+- `read_memory` / `write_memory` tools
+- Memory types (`MemoryScope`, `MemoryStore`, `MemoryWriteMode`, result models)
+- Chat/global scope resolution
+- Cross-group global memory via shared host-mounted path
+- Memory context snippet injection with budget clipping
+- Approval/idempotency for `write_memory`
+- Provider seam for future Wax adapter
+
+### Status
+
+- [x] `MemoryStore` abstraction + `FileMemoryStore` default backend
+- [x] `read_memory` and `write_memory` shipped in tool catalog
+- [x] `scope=chat` mapped to group-local memory file
+- [x] `scope=global` mapped to shared memory mount
+- [x] Shared memory mount wired in host container session manager
+- [x] Memory snippets injected into agent instructions with token budget cap
+- [x] `write_memory` included in side-effect control policy
+- [x] Swift tests for memory semantics and invalid args
+
+## Phase 1A: Wax Decision Packet
+
+### Scope
+
+- Validate Wax fit against Linux container runtime model.
+- Produce go/no-go decision with criteria:
+  - compile/runtime compatibility
+  - startup overhead
+  - retrieval latency
+  - operational complexity
+  - testability in this repo
+
+### Status
+
+- [x] Decision packet documented in `docs/WAX_DECISION.md`
+- [x] Adapter seam exists so Wax can be added without changing tool contracts
+
+## Phase 2: Loop Capacity Uplift
+
+### Scope
+
+- Keep dual-route architecture
+- Raise budgets to balanced defaults
+- Add iteration/stop-reason telemetry
+- Add empty-visible retry guard
+- Add explicit compaction thresholds
+- Preserve provider throttle and circuit protections
+
+### Status
+
+- [x] Budget defaults raised and config-backed
+- [x] Stop-reason metadata emitted
+- [x] One-time empty-visible retry guard implemented
+- [x] Session compaction policy implemented
+- [x] Rate-limit protection preserved
+- [x] Loop policy and retry behavior tests updated/passing
+
+## Phase 3: `send_message` Attachment Support (Telegram v1)
+
+### Scope
+
+- Tool schema supports `message|text`, `attachment_path`, `caption`
+- Host IPC model extended for attachment metadata
+- Safe container-path to host-path translation
+- Telegram document delivery with retry path
+- Outbound queue persistence/audit for attachments
+
+### Status
+
+- [x] Tool schema and validation implemented
+- [x] Host IPC parsing + safe path resolver implemented
+- [x] SQLite outbound schema expanded with attachment fields
+- [x] Telegram transport supports document send with caption
+- [x] Queue coordinator dispatches text vs attachment kinds
+- [x] Swift tests for path safety and attachment queue delivery
+- [x] Explicit tool-intent parser supports deterministic `send_message` args (`message|text`, `attachment_path`, `caption`) to reduce loop variance
+- [x] Live Telegram attachment smoke validated (`attachment_path` + `caption`, outbound `attachment` row acked)
+
+## Phase 3A: Inbound Photo Analysis (Telegram)
+
+### Scope
+
+- Capture inbound Telegram photo metadata (`file_id`, dimensions, size)
+- Download inbound photo media from Telegram API and persist under group storage
+- Add host-side OCR extractor seam (`ImageTextExtracting`) with no-op default
+- Enrich inbound event content with OCR text (if available) or deterministic saved-path context
+- Keep implementation Swift-first in host runtime with regression tests
+
+### Status
+
+- [x] Inbound event model extended with `attachments` payload
+- [x] Telegram inbound mapper preserves photo attachment metadata
+- [x] Host media pipeline implemented (`TelegramInboundMediaPipeline`)
+- [x] Telegram file fetcher wired (`getFile` + file download)
+- [x] Photo persistence path wired to `/workspace/group/.nanoclaw/inbound-media/...`
+- [x] OCR seam wired with no-op default backend
+- [x] Content enrichment for photo-only prompts implemented
+- [x] Captioned-photo prompts now include OCR enrichment context (no more photo-only gate)
+- [x] Swift tests added/passing for mapper + pipeline behavior
+- [x] Apple Vision OCR backend wired for host runtime (with no-op fallback when unavailable)
+- [x] Deterministic OCR direct-response path added for photo-text requests (strict output, confidence, correction hints)
+- [x] OCR confidence/quality policy and user-facing fallback phrasing (includes low-confidence re-capture guidance)
+- [x] OCR output polish: line-wrap normalization and debug-only image-path exposure
+
+## Phase 4: MCP Runtime Completion (Before Multi-Channel)
+
+### Scope
+
+- Load `.mcp.json` in active startup path
+- Launch supported container runtime MCP servers
+- Discover/register bridged MCP tools
+- Surface diagnostics for skipped/failed servers
+- Add runtime tests and smoke path
+
+### Status
+
+- [x] MCP bootstrap wired into active `NanoClawAgent` startup path
+- [x] MCP registration pipeline bridged into runtime tool list
+- [x] Startup diagnostics surfaced in agent startup context
+- [x] Config/registration unit tests passing
+- [x] Real local MCP server smoke test completed (container-local stdio server; `mcp_localsmoke_ping -> mcp-smoke: ok`)
+- [x] User-facing `mcp_status` tool added (deterministic explicit invocation path + startup status summary)
+- [x] Generic host MCP bridge added for `.mcp.json` entries with `runtime: "host"` + `transport: "stdio"`
+- [x] Host relay MCP endpoints added: `/mcp/host/bootstrap`, `/mcp/host/call`, `/mcp/host/cli`, `/mcp/host/status`
+- [x] Agent host MCP bootstrap/execution wired into active startup path (no per-server Swift code changes required)
+- [x] Added `mcp_host_cli` tool for direct host MCP server CLI execution (token-cheap path)
+- [x] Added `mcp_reload` tool for config-driven MCP reload + host rebootstrap diagnostics
+- [x] Added host MCP command/server-id validation and regression tests
+- [x] FocusRelay coverage audit: runtime-loaded MCP tools match FocusRelay server tool declarations exactly (9/9)
+- [x] Added generic MCP user-facing output rendering so explicit MCP/CLI calls return readable summaries instead of raw JSON payloads in Telegram
+- [x] Added cursor-aware MCP pagination UX for `mcp_host_cli` (`show more` continuation + next-page hint with stored cursor context)
+- [x] Added terminal pagination state handling so empty continuation pages return a clear "no additional items" response instead of dropping to "no active pagination"
+- [x] Added continuation page-size override for MCP pagination (`show more <n>`) with regression coverage.
+- [x] Added operator guide for mixed host/container MCP server configuration and lifecycle (`docs/MCP_OPERATIONS.md`).
+
+### FocusRelay Compatibility Notes
+
+- [x] Existing FocusRelay convenience tools remain for backward compatibility.
+- [x] Preferred path is now generic MCP config (`runtime: host`) plus bridged `mcp_<server>_<tool>` tools.
+
+## Phase 5: Multi-Channel
+
+### Scope
+
+- Deferred intentionally.
+
+### Status
+
+- [x] Explicitly deferred until after MCP completion + stabilization
+
+## Phase 4B: Daemon Agent Cache (Latency)
+
+### Scope
+
+- Keep long-running container daemon model.
+- Cache `NanoClawAgent` instance inside daemon and reuse across requests when request key is unchanged.
+- Rebuild cached agent on key change (`group_folder`, `chat_jid`, `is_main`, `is_scheduled_task`) or explicit invalidation.
+- Invalidate cache after successful `mcp_reload` request so newly loaded MCP bridged tools are available on the next request.
+- Add Swift tests for cache reuse/rebuild and invalidation trigger parsing.
+
+### Status
+
+- [x] Daemon cache actor implemented and wired into request processing
+- [x] `mcp_reload` invalidates cached agent after success
+- [x] Swift tests for cache behavior and invalidation prompts
+
+## Phase 4C: Scheduled Report Reliability Investigation
+
+### Scope
+
+- Verify scheduler trigger path end-to-end for recurring reports:
+  - host startup catch-up path
+  - 30s poll loop due-check path
+  - queue dispatch
+  - post-run `next_run` advancement
+- Add a deterministic operator workflow to diagnose missed reports from host log + SQLite state.
+- Classify scheduled run failures by cause (`host_down`, `network_offline`, `provider_timeout`, `provider_rate_limit`, `token_overflow`, `tool_error`).
+- Add user-facing failure notice for scheduled runs so silent misses are reduced.
+- Add targeted retry policy for transient scheduled-run failures (429/5xx/timeout) with hard cap.
+- Add Swift regression tests for:
+  - startup catch-up after downtime
+  - exactly-once enqueue guard for due tasks
+  - failure classification + user-visible failure response
+
+### Current Findings (2026-02-18)
+
+- [x] No OS cron dependency: scheduling is host-driven in `NanoClawHostService.schedulerLoop()` + `store.dueTasks(nowISO:)`.
+- [x] Startup catch-up exists and runs before poll loop start (`enqueueDueScheduledTasks(reason: "startup")`).
+- [x] Daily report miss reproduced as execution failure, not trigger miss (`task-1770913720773-AFDA0B` ran at `2026-02-18T00:01:50Z` and failed with upstream timeout).
+- [x] Direct-request watchdog false negatives observed: host watchdog (`240s`) fired before some container responses arrived (`~245s-252s`), causing user-visible timeout despite eventual container success.
+- [x] Natural-language intent gaps observed for direct Telegram commands/tool mapping (e.g. `"List my scheduled tasks"`, `"Anything in my OmniFocus inbox?"`) causing avoidable LLM loop usage.
+- [x] Root cause confirmed for OmniFocus "due today" failures: upstream FocusRelay `list-tasks` with due-date filters (`--due-after` / `--due-before`) can time out at bridge layer (`Bridge response timed out`).
+- [x] Upstream FocusRelay timeout mitigation implemented and submitted as PR: `deverman/FocusRelayMCP#8` (extended timeout policy for heavy date/search filters).
+- [x] Telemetry/soak spot-check (`verify-telegram-soak --since-minutes 120`) passed for recent Telegram request flow (accepted/completed parity observed).
+- [x] Scheduler diagnostics confirm trigger path is healthy; current missed Apple report cause remains upstream provider timeout (`HTTP 502 timeout`) on `task-1770913720773-AFDA0B`.
+- [x] Live scheduler diagnostics snapshot captured (`nanoclaw-hostctl scheduler-diagnostics`): host healthy, both recurring tasks active, `next_run` values advancing correctly (`2026-02-19T00:00:00Z`, `2026-02-19T00:30:00Z`).
+- [x] DB evidence confirms scheduler trigger + run logging is functioning (`store/messages.db`: `scheduled_tasks`, `task_run_logs`), with failures concentrated in provider-side errors (`502 timeout`, prior `429`, prior token overflow), not missed cron trigger execution.
+- [x] Local CLI due-window probe currently returns without timeout (`focusrelay list-tasks --due-before ... --due-after ... --limit 20` in ~2.6s); remaining validation is Telegram end-to-end behavior through MCP bridge.
+
+### Status
+
+- [x] Added `nanoclaw-hostctl scheduler-diagnostics` command (host health + scheduled task rows + recent task_run_logs + scheduler loop log evidence + inferred failure cause classification).
+- [x] Add scheduled failure classification + structured telemetry.
+- [x] Add scheduled failure user notification template with concise remediation hint.
+- [x] Add transient retry policy for scheduled runs (bounded attempts + backoff + idempotent send guard).
+- [x] Add Swift tests for downtime catch-up, dedupe, and transient retry behavior.
+- [x] Increased default queue watchdog budget to reduce false timeout preemption (`NANOCLAW_QUEUE_JOB_WATCHDOG_MS`: `295000`).
+- [x] Expanded deterministic intent parsing for direct scheduled-task listing and OmniFocus inbox/due-today asks to reduce slow LLM loop fallthrough.
+- [x] Decided not to ship paging/fallback workarounds for FocusRelay due-date filter timeout; surfaced failure transparently while upstream fix was in flight.
+- [x] Added serialized dev command `nanoclaw-devctl rebuild-and-restart` with repo lock to prevent concurrent devctl SwiftPM operations that can trigger llbuild SQLite build-db contention.
+- [x] Started passive (no extra LLM prompt) soak baseline at `2026-02-18 17:17 +0800`; both scheduled tasks active with next runs `2026-02-19T00:00:00Z` and `2026-02-19T00:30:00Z`.
+
+## Parity Tools and Skills
+
+### Status
+
+- [x] Skills subsystem shipped (`list_skills`, `activate_skill`, `deactivate_skill`, `sync_skills`)
+- [x] Parity tools shipped (`todo_*`, `sub_agent`, `get_task_history`, `export_chat`)
+- [x] Natural-language tool intent mapping improved for common task operations
+- [x] Added default skills discovery support for `~/.claude/skills` alongside existing `CODEX_HOME/skills` and `~/.codex/skills` (explicit `skills_root` still supported).
+- [x] Added deterministic active-skill context injection before each run.
+- [x] Added configurable token budget + truncation for injected skill context (`NANOCLAW_SKILLS_CONTEXT_TOKEN_BUDGET`, `NANOCLAW_SKILLS_CONTEXT_MAX`).
+- [x] Added per-request auto-resolver for active skills by intent (`NANOCLAW_SKILLS_AUTO_RESOLVE`).
+- [x] Added run telemetry metadata for injected skills (`nanoclaw.skills.*` keys in result metadata).
+
+## Operational Notes
+
+1. If code changes touch `Sources/NanoClawAgent/**`, `Package.swift`, or container runtime files, rebuild image before runtime validation:
+   - `swift run nanoclaw-devctl build-agent-image slim`
+2. If code changes touch `Sources/NanoClawHost/**`, restart host before runtime validation:
+   - `swift run nanoclaw-hostctl restart`
+3. For end-to-end changes involving both host and agent, do both steps.
+
+## Next Priority Queue
+
+1. Re-run daily scheduled-report soak across two cycles and verify trigger + delivery evidence in logs/DB.
+2. Validate OmniFocus due-today Telegram ask end-to-end against FocusRelay upstream timeout patch after Homebrew upgrade.
+3. Keep using serialized runtime update flow by default for local validation:
+   - `swift run nanoclaw-devctl rebuild-and-restart slim`
+4. Continue MCP usability polish (cursor UX + human-readable rendering) only when tied to observed user friction; avoid speculative over-architecture.
+
+## Immediate Operator Command Set
+
+1. Scheduler health snapshot:
+   - `swift run nanoclaw-hostctl scheduler-diagnostics`
+2. DB verification snapshots:
+   - `sqlite3 store/messages.db "SELECT id,status,schedule_type,schedule_value,next_run,last_run,last_result FROM scheduled_tasks ORDER BY id;"`
+   - `sqlite3 store/messages.db "SELECT task_id,run_at,status,duration_ms,substr(result,1,120),substr(error,1,120) FROM task_run_logs ORDER BY run_at DESC LIMIT 10;"`

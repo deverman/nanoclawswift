@@ -1,151 +1,96 @@
-# NanoClaw Security Model
+# Security Model
 
-## Trust Model
+Updated: 2026-02-18
 
-| Entity | Trust Level | Rationale |
-|--------|-------------|-----------|
-| Main group | Trusted | Private self-chat, admin control |
-| Non-main groups | Untrusted | Other users may be malicious |
-| Container agents | Sandboxed | Isolated execution environment |
-| WhatsApp messages | User input | Potential prompt injection |
+## Trust Boundaries
 
-## Security Boundaries
+1. Telegram inbound messages are untrusted input.
+2. Host process (`nanoclaw-host`) is trusted control-plane.
+3. Containerized agent runtime is isolated execution-plane.
+4. Provider and MCP endpoints are external dependencies.
 
-### 1. Container Isolation (Primary Boundary)
+## Primary Security Controls
 
-Agents execute in Apple Container (lightweight Linux VMs), providing:
-- **Process isolation** - Container processes cannot affect the host
-- **Filesystem isolation** - Only explicitly mounted directories are visible
-- **Non-root execution** - Runs as unprivileged `node` user (uid 1000)
-- **Ephemeral containers** - Fresh environment per invocation (`--rm`)
+### 1) Container Isolation
 
-This is the primary security boundary. Rather than relying on application-level permission checks, the attack surface is limited by what's mounted.
+- Agent logic runs in Apple Container Linux VM sessions.
+- Group workspace mount is explicit (`/workspace/group`).
+- Shared memory mount is explicit (`/workspace/shared-memory`).
+- Host secrets are not blanket-mounted into containers.
 
-### 2. Mount Security
+### 2) Environment Passthrough Allowlist
 
-**External Allowlist** - Mount permissions stored at `~/.config/nanoclaw/mount-allowlist.json`, which is:
-- Outside project root
-- Never mounted into containers
-- Cannot be modified by agents
+Host forwards only specific env keys into containers (model/provider/runtime knobs). Arbitrary host env does not pass through by default.
 
-**Default Blocked Patterns:**
-```
-.ssh, .gnupg, .aws, .azure, .gcloud, .kube, .docker,
-credentials, .env, .netrc, .npmrc, id_rsa, id_ed25519,
-private_key, .secret
-```
+### 3) Side-Effect Gating
 
-**Protections:**
-- Symlink resolution before validation (prevents traversal attacks)
-- Container path validation (rejects `..` and absolute paths)
-- `nonMainReadOnly` option forces read-only for non-main groups
+Side-effect tools are wrapped with approval/idempotency controls, including:
 
-### 3. Session Isolation
+- `write`
+- `edit`
+- `bash`
+- `send_message`
+- `schedule_task`
+- `pause_task`
+- `resume_task`
+- `cancel_task`
+- `todo_write`
+- `activate_skill`
+- `deactivate_skill`
+- `sync_skills`
+- `write_memory`
 
-Each group has isolated Claude sessions at `data/sessions/{group}/.claude/`:
-- Groups cannot see other groups' conversation history
-- Session data includes full message history and file contents read
-- Prevents cross-group information disclosure
+### 4) Attachment Path Safety
 
-### 4. IPC Authorization
+`send_message` attachment flow maps container paths to host paths safely and rejects:
 
-Messages and task operations are verified against group identity:
+- traversal attempts (`..`)
+- out-of-root paths
+- invalid/unresolvable attachment references
 
-| Operation | Main Group | Non-Main Group |
-|-----------|------------|----------------|
-| Send message to own chat | ✓ | ✓ |
-| Send message to other chats | ✓ | ✗ |
-| Schedule task for self | ✓ | ✓ |
-| Schedule task for others | ✓ | ✗ |
-| View all tasks | ✓ | Own only |
-| Manage other groups | ✓ | ✗ |
+### 5) Telegram Owner Gating
 
-### 5. Credential Handling
+Direct Telegram usage is restricted to `TELEGRAM_OWNER_ID`.
 
-**Runtime Credentials:**
-- Model/provider credentials are passed via a generated `--env-file` at launch time.
-- Optional Claude auth token can be included when present.
+## Data Scope
 
-**NOT Mounted:**
-- WhatsApp session (`store/auth/`) - host only
-- Mount allowlist - external, never mounted
-- Any credentials matching blocked patterns
+- Chat memory: group-local persistent memory file.
+- Global memory: shared host-mounted file accessible across groups.
+- Session/chat history: stored in local runtime storage (SQLite + session files).
 
-**Credential Filtering:**
-Only an allowlisted set of environment variables is exposed to containers:
-```typescript
-const allowedVars = [
-  'MODEL_PROVIDER', 'MODEL_NAME',
-  'OPENAI_API_KEY', 'MOONSHOT_API_KEY', 'ANTHROPIC_API_KEY',
-  'BASE_URL', 'TIMEOUT', 'MAX_TOKENS', 'ASSISTANT_NAME',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'NANOCLAW_WEB_BROKER_URL', 'NANOCLAW_GROUP_FOLDER'
-];
-```
+## MCP Security Posture
 
-> **Note:** Any credentials passed to the container are available to processes inside the container. Keep the allowlist minimal and do not pass unrelated host secrets.
+- MCP servers are loaded from `.mcp.json`.
+- Runtime supports `transport=stdio` with:
+  - `runtime=container` (container-launched MCP servers)
+  - `runtime=host` (host-launched MCP servers via relay bridge)
+- MCP failures are surfaced through diagnostics.
 
-### 6. Web Access Policy Model
+## Host MCP Bridge Security Posture
 
-Web tools (`web_fetch`, `web_search`) execute through a host-side broker that enforces domain policy before outbound requests.
+- Host relay endpoints:
+  - `/mcp/host/bootstrap`
+  - `/mcp/host/call`
+  - `/mcp/host/cli`
+  - `/mcp/host/status`
+- Bootstrap validates server IDs, command payloads, args, env keys/values, and working directory fields.
+- Tool calls validate server/tool/argument names and JSON argument payload types before MCP invocation.
+- Host CLI calls are constrained to already-bootstrapped MCP server commands and validated args.
+- Command/arg payloads reject control characters and enforce size/count limits.
 
-- **Global baseline policy**: `~/.config/nanoclaw/web-policy.global.json`
-  - Host-managed and not mounted into containers.
-- **Group overlay policy**: `groups/{group}/.nanoclaw/web-policy.overlay.json`
-  - Mounted in the group folder and directly writable by container tools.
-  - Scope is limited to the current group only.
+## FocusRelay Compatibility Bridge
 
-Effective policy = `global allow + group allow`, with deny rules and hard-deny host checks applied first.
+- Legacy FocusRelay relay endpoints (`/focusrelay/*`) remain available for backward compatibility.
+- FocusRelay-specific allowlisted subcommand checks are still applied on those compatibility endpoints.
+## Known Limits
 
-Tradeoff: Bash remains unrestricted by design, so policy is best-effort for web tools rather than a strict network egress control.
+1. Network egress is not hard-denied by default at container layer.
+2. Provider quotas/rate limits can still fail requests.
+3. Security depends on correct host env configuration and keeping host runtime controlled.
 
-### 7. Structured Tool-Call Enforcement
+## Operational Recommendations
 
-Agent execution uses Swarm's native structured tool-calling flow (`ToolCallingAgent`).
-
-- Tools execute only when returned in structured `tool_calls`.
-- Raw pseudo-tool markdown/code blocks (for example ````tool ...````) are treated as invalid output.
-- Invalid tool-block output is blocked by output guardrails and converted into a safe retry message.
-
-This reduces prompt-based tool spoofing risk compared to text-parsed tool execution.
-
-## Privilege Comparison
-
-| Capability | Main Group | Non-Main Group |
-|------------|------------|----------------|
-| Project root access | `/workspace/project` (rw) | None |
-| Group folder | `/workspace/group` (rw) | `/workspace/group` (rw) |
-| Global memory | Implicit via project | `/workspace/global` (ro) |
-| Additional mounts | Configurable | Read-only unless allowed |
-| Network access | Unrestricted | Unrestricted |
-| MCP tools | All | All |
-| Web policy overlay writes | Own group | Own group |
-
-## Security Architecture Diagram
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        UNTRUSTED ZONE                             │
-│  WhatsApp Messages (potentially malicious)                        │
-└────────────────────────────────┬─────────────────────────────────┘
-                                 │
-                                 ▼ Trigger check, input escaping
-┌──────────────────────────────────────────────────────────────────┐
-│                     HOST PROCESS (TRUSTED)                        │
-│  • Message routing                                                │
-│  • IPC authorization                                              │
-│  • Mount validation (external allowlist)                          │
-│  • Container lifecycle                                            │
-│  • Credential filtering                                           │
-└────────────────────────────────┬─────────────────────────────────┘
-                                 │
-                                 ▼ Explicit mounts only
-┌──────────────────────────────────────────────────────────────────┐
-│                CONTAINER (ISOLATED/SANDBOXED)                     │
-│  • Agent execution                                                │
-│  • Bash commands (sandboxed)                                      │
-│  • File operations (limited to mounts)                            │
-│  • Network access (unrestricted)                                  │
-│  • Cannot modify security config                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
+1. Keep API keys in environment, never in source.
+2. Keep `TELEGRAM_OWNER_ID` set in all non-local environments.
+3. Review side-effect tool usage in logs for unusual patterns.
+4. Keep runtime and dependency updates tested before deployment.

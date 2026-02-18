@@ -8,12 +8,23 @@ struct HostRuntimeConfig: Sendable {
     let containerImage: String
     let containerTimeoutMs: Int
     let containerPollMs: Int
+    let queueJobWatchdogMs: Int
+    let sessionJanitorIntervalSec: Int
+    let staleClaimReapAgeSec: Int
+    let containerPassthroughEnvironment: [String: String]
 }
 
-enum ContainerSessionError: Error {
+enum ContainerSessionError: Error, LocalizedError {
     case startupFailed(message: String)
     case requestFailed(message: String)
     case requestTimedOut(message: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .startupFailed(let message), .requestFailed(let message), .requestTimedOut(let message):
+            return message
+        }
+    }
 }
 
 actor ContainerSessionManager {
@@ -61,6 +72,18 @@ actor ContainerSessionManager {
     init(config: HostRuntimeConfig, logger: Logger) {
         self.config = config
         self.logger = logger
+    }
+
+    nonisolated static func deterministicContainerName(for groupFolder: String) -> String {
+        let sanitized = groupFolder
+            .lowercased()
+            .map { char -> Character in
+                if char.isLetter || char.isNumber || char == "-" {
+                    return char
+                }
+                return "-"
+            }
+        return "nanoclaw-\(String(sanitized))-active"
     }
 
     func activeSessionCount() -> Int {
@@ -151,6 +174,11 @@ actor ContainerSessionManager {
         }
     }
 
+    func recycleSession(for groupFolder: String) async {
+        guard let session = sessions.removeValue(forKey: groupFolder) else { return }
+        await stopSession(session)
+    }
+
     func sweepStaleContainers() async {
         let command = Process()
         command.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -167,11 +195,24 @@ actor ContainerSessionManager {
             let data = stdout.fileHandleForReading.readDataToEndOfFile()
             guard !data.isEmpty else { return }
             guard let raw = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
-            for entry in raw {
-                guard let name = entry["name"] as? String,
-                      name.hasPrefix("nanoclaw-") else { continue }
-                let state = (entry["status"] as? String)?.lowercased() ?? ""
-                if state != "running" {
+
+            let entries: [[String: String]] = raw.compactMap { entry in
+                guard let name = entry["name"] as? String else { return nil }
+                let status = (entry["status"] as? String) ?? ""
+                return ["name": name, "status": status]
+            }
+
+            let activeContainerNames = Set(sessions.values.map(\.containerName))
+            let actions = ContainerSweepPlanner.plan(
+                from: entries,
+                activeSessionContainerNames: activeContainerNames
+            )
+
+            for action in actions {
+                switch action {
+                case .stopAndRemove(let name):
+                    await stopAndRemoveContainer(name: name)
+                case .remove(let name):
                     await removeContainer(name: name)
                 }
             }
@@ -196,6 +237,8 @@ actor ContainerSessionManager {
             .appendingPathComponent(group.folder)
             .appendingPathComponent(".claude")
         let logsDir = groupDir.appendingPathComponent("logs")
+        let sharedMemoryDir = URL(fileURLWithPath: config.storeDir)
+            .appendingPathComponent("shared-memory")
 
         try fileManager.createDirectory(at: groupDir, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: inputDir, withIntermediateDirectories: true)
@@ -204,6 +247,7 @@ actor ContainerSessionManager {
         try fileManager.createDirectory(at: messagesDir, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: logsDir, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: sharedMemoryDir, withIntermediateDirectories: true)
         try cleanIpcRuntimeArtifacts(
             inputDir: inputDir,
             outputDir: outputDir,
@@ -213,7 +257,7 @@ actor ContainerSessionManager {
         )
 
         let timestamp = Int(Date().timeIntervalSince1970)
-        let containerName = "nanoclaw-\(group.folder)-\(timestamp)"
+        let containerName = Self.deterministicContainerName(for: group.folder)
         let logFile = logsDir.appendingPathComponent("daemon-\(timestamp).log")
         if !fileManager.fileExists(atPath: logFile.path) {
             fileManager.createFile(atPath: logFile.path, contents: nil)
@@ -227,16 +271,39 @@ actor ContainerSessionManager {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.currentDirectoryURL = URL(fileURLWithPath: config.projectRoot)
 
+        await stopAndRemoveContainer(name: containerName)
+
         var args: [String] = ["container", "run", "-i", "--rm", "--name", containerName]
         args.append(contentsOf: ["-v", "\(groupDir.path):/workspace/group"])
         args.append(contentsOf: ["-v", "\(ipcRoot.path):/workspace/ipc"])
+        args.append(contentsOf: ["-v", "\(sharedMemoryDir.path):/workspace/shared-memory"])
         args.append(contentsOf: ["-v", "\(sessionsDir.path):/home/nanoclaw/.claude"])
+        if let hostSkillsRoot = Self.resolveHostSkillsRoot(
+            projectRoot: config.projectRoot,
+            passthroughEnvironment: config.containerPassthroughEnvironment
+        ) {
+            args.append(contentsOf: ["-v", "\(hostSkillsRoot):/home/nanoclaw/.codex/skills"])
+            logger.info("Mounted skills root for group \(group.folder): \(hostSkillsRoot)")
+        } else {
+            logger.warning("No host skills root found for group \(group.folder). Skills tools will return 'skills root not found' until ~/.codex/skills exists.")
+        }
+        if let hostClaudeSkillsRoot = Self.resolveHostClaudeSkillsRoot(homePath: FileManager.default.homeDirectoryForCurrentUser.path) {
+            args.append(contentsOf: ["-v", "\(hostClaudeSkillsRoot):/home/nanoclaw/.claude/skills"])
+            logger.info("Mounted Claude skills root for group \(group.folder): \(hostClaudeSkillsRoot)")
+        }
 
         if group.folder == "main" {
             args.append(contentsOf: ["-v", "\(config.projectRoot):/workspace/project"])
         }
 
-        for envArgument in buildContainerEnvironment(groupFolder: group.folder) {
+        let containerEnvironment = buildContainerEnvironment(groupFolder: group.folder)
+        if let relayBaseURL = containerEnvironment.first(where: { $0.hasPrefix("BASE_URL=") }) {
+            logger.info("Container env relay target group=\(group.folder) \(relayBaseURL)")
+        }
+        if let modelProvider = containerEnvironment.first(where: { $0.hasPrefix("MODEL_PROVIDER=") }) {
+            logger.info("Container env model provider group=\(group.folder) \(modelProvider)")
+        }
+        for envArgument in containerEnvironment {
             args.append(contentsOf: ["--env", envArgument])
         }
 
@@ -282,26 +349,28 @@ actor ContainerSessionManager {
     }
 
     private func stopSession(_ session: GroupSession) async {
-        guard session.process.isRunning else { return }
-        let closeSentinel = session.ipcRoot.appendingPathComponent("_close")
-        try? atomicWrite(data: Data(), to: closeSentinel)
-
-        let deadline = Date().addingTimeInterval(5)
-        while session.process.isRunning, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-
         if session.process.isRunning {
-            session.process.terminate()
-            let hardDeadline = Date().addingTimeInterval(2)
-            while session.process.isRunning, Date() < hardDeadline {
+            let closeSentinel = session.ipcRoot.appendingPathComponent("_close")
+            try? atomicWrite(data: Data(), to: closeSentinel)
+
+            let deadline = Date().addingTimeInterval(5)
+            while session.process.isRunning, Date() < deadline {
                 try? await Task.sleep(for: .milliseconds(100))
             }
-        }
 
-        if session.process.isRunning {
-            kill(session.process.processIdentifier, SIGKILL)
+            if session.process.isRunning {
+                session.process.terminate()
+                let hardDeadline = Date().addingTimeInterval(2)
+                while session.process.isRunning, Date() < hardDeadline {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+
+            if session.process.isRunning {
+                kill(session.process.processIdentifier, SIGKILL)
+            }
         }
+        await removeContainer(name: session.containerName)
     }
 
     private func removeContainer(name: String) async {
@@ -321,24 +390,23 @@ actor ContainerSessionManager {
         }
     }
 
-    private func buildContainerEnvironment(groupFolder: String) -> [String] {
-        let passthroughKeys = [
-            "MODEL_PROVIDER",
-            "MODEL_NAME",
-            "OPENAI_API_KEY",
-            "MOONSHOT_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "BASE_URL",
-            "TIMEOUT",
-            "MAX_TOKENS",
-            "ASSISTANT_NAME",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-            "NANOCLAW_WEB_BROKER_URL"
-        ]
+    private func stopAndRemoveContainer(name: String) async {
+        let stop = Process()
+        stop.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        stop.arguments = ["container", "stop", name]
+        do {
+            try stop.run()
+            stop.waitUntilExit()
+        } catch {
+            logger.debug("Failed to stop stale container \(name): \(error.localizedDescription)")
+        }
+        await removeContainer(name: name)
+    }
 
+    private func buildContainerEnvironment(groupFolder: String) -> [String] {
         var env: [String] = []
-        for key in passthroughKeys {
-            if let value = ProcessInfo.processInfo.environment[key], !value.isEmpty {
+        for key in HostEnvironmentConfig.containerPassthroughKeys {
+            if let value = config.containerPassthroughEnvironment[key], !value.isEmpty {
                 env.append("\(key)=\(value)")
             }
         }
@@ -356,8 +424,63 @@ actor ContainerSessionManager {
         env.append("NANOCLAW_GROUP_FOLDER=\(groupFolder)")
         env.append("NANOCLAW_BASE_PATH=/workspace/group")
         env.append("NANOCLAW_IPC_BASE_PATH=/workspace/ipc")
+        env.append("NANOCLAW_SHARED_MEMORY_PATH=/workspace/shared-memory")
         env.append("NANOCLAW_GROUP_ISOLATED_MOUNT=1")
+        env.append("CODEX_HOME=/home/nanoclaw/.codex")
         return env
+    }
+
+    nonisolated static func resolveHostSkillsRoot(
+        projectRoot: String,
+        passthroughEnvironment: [String: String],
+        homePath: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> String? {
+        let projectCodexSkills = URL(fileURLWithPath: projectRoot)
+            .appendingPathComponent(".codex")
+            .appendingPathComponent("skills")
+            .path
+        let homeCodexSkills = URL(fileURLWithPath: homePath)
+            .appendingPathComponent(".codex")
+            .appendingPathComponent("skills")
+            .path
+
+        var candidates: [String] = []
+        if let codexHome = passthroughEnvironment["CODEX_HOME"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !codexHome.isEmpty {
+            candidates.append(
+                URL(fileURLWithPath: codexHome)
+                    .appendingPathComponent("skills")
+                    .path
+            )
+        }
+        candidates.append(projectCodexSkills)
+        candidates.append(homeCodexSkills)
+
+        for candidate in candidates {
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory),
+               isDirectory.boolValue {
+                return candidate
+            }
+        }
+
+        return nil
+    }
+
+    nonisolated static func resolveHostClaudeSkillsRoot(
+        homePath: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> String? {
+        let candidate = URL(fileURLWithPath: homePath)
+            .appendingPathComponent(".claude")
+            .appendingPathComponent("skills")
+            .path
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return nil
+        }
+        return candidate
     }
 
     private func atomicWrite(data: Data, to url: URL) throws {

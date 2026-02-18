@@ -9,6 +9,12 @@ public struct NanoClawConfig: Codable, Sendable {
     public let timeout: Int
     public let maxTokens: Int?
     public let assistantName: String?
+    public let requestsPerMinuteLimit: Int?
+    public let fallbackProvider: ModelProvider?
+    public let fallbackAPIKey: String?
+    public let fallbackModel: ModelName?
+    public let fallbackBaseURL: String?
+    public let fallbackRequestsPerMinuteLimit: Int?
     
     public init(
         apiKey: String,
@@ -17,7 +23,13 @@ public struct NanoClawConfig: Codable, Sendable {
         baseURL: String? = nil,
         timeout: Int = 180,
         maxTokens: Int? = nil,
-        assistantName: String? = nil
+        assistantName: String? = nil,
+        requestsPerMinuteLimit: Int? = nil,
+        fallbackProvider: ModelProvider? = nil,
+        fallbackAPIKey: String? = nil,
+        fallbackModel: ModelName? = nil,
+        fallbackBaseURL: String? = nil,
+        fallbackRequestsPerMinuteLimit: Int? = nil
     ) {
         self.apiKey = apiKey
         self.provider = provider
@@ -26,6 +38,12 @@ public struct NanoClawConfig: Codable, Sendable {
         self.timeout = timeout
         self.maxTokens = maxTokens
         self.assistantName = assistantName
+        self.requestsPerMinuteLimit = requestsPerMinuteLimit
+        self.fallbackProvider = fallbackProvider
+        self.fallbackAPIKey = fallbackAPIKey
+        self.fallbackModel = fallbackModel
+        self.fallbackBaseURL = fallbackBaseURL
+        self.fallbackRequestsPerMinuteLimit = fallbackRequestsPerMinuteLimit
     }
     
     /// Effective base URL (custom or provider default)
