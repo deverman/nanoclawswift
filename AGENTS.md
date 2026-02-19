@@ -31,4 +31,6 @@
 - Preferred single command for end-to-end runtime updates:
   - `swift run nanoclaw-devctl rebuild-and-restart slim`
 - Use serialized `nanoclaw-devctl` flows (or run commands sequentially) to avoid concurrent SwiftPM build-db contention.
+- Linux static SDK note: this project builds against the musl static SDK in local image workflows; Linux libc imports in shared code should use compatibility guards (`canImport(Glibc)` / `canImport(Musl)`) instead of assuming `Glibc`.
+- Editable dependencies under `Packages/` are gitignored in this repository; if a runtime-critical fix is made there, track the upstream PR/commit and record it in `IMPLEMENTATION_PLAN.md`.
 - Do not claim a runtime fix is validated until the required rebuild/restart steps above have been completed.

@@ -245,6 +245,22 @@ This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, w
 - [x] Natural-language intent gaps observed for direct Telegram commands/tool mapping (e.g. `"List my scheduled tasks"`, `"Anything in my OmniFocus inbox?"`) causing avoidable LLM loop usage.
 - [x] Root cause confirmed for OmniFocus "due today" failures: upstream FocusRelay `list-tasks` with due-date filters (`--due-after` / `--due-before`) can time out at bridge layer (`Bridge response timed out`).
 - [x] Upstream FocusRelay timeout mitigation implemented and submitted as PR: `deverman/FocusRelayMCP#8` (extended timeout policy for heavy date/search filters).
+- [x] Dev build instability root-cause findings captured:
+  - containerized SwiftPM builds for agent image (`swift:6.2.3` + mounted workspace) can fail with llbuild SQLite assertions.
+  - containerized SwiftPM repo cache can enter broken state (`git -C .../org.swift.swiftpm/repositories/...: No such file or directory`).
+  - host static SDK build path can intermittently hang with idle `swift-build` process in this environment.
+- [x] Additional root cause confirmed for local static SDK build failures on macOS 26 target:
+  - static Linux SDK is musl-based; Linux-only libc imports that assume `Glibc` fail with `no such module 'Glibc'`.
+  - fixed in vendored `Conduit` by using `canImport(Glibc)` / `canImport(Musl)` compatibility imports.
+  - note: `Packages/` is gitignored in this repo; long-term durability requires upstreaming this fix or pinning a patched dependency revision.
+- [x] `nanoclaw-devctl` reliability hardening expanded:
+  - warm static SDK build path (`.build/linux-static-sdk`) instead of per-run cold temp path.
+  - transient failure classifier + one clean retry after build-path reset.
+  - timeout watchdog remains enforced for build/container build stages.
+- [x] Clean serialized runtime update completed with new path (`swift run nanoclaw-devctl rebuild-and-restart slim`):
+  - static Linux `nanoclaw-agent` build succeeded in ~118s after warm path stabilization.
+  - container image `nanoclawswift-agent:slim` packaged successfully.
+  - host restart completed (`nanoclaw-host` new pid + healthy socket).
 - [x] Telemetry/soak spot-check (`verify-telegram-soak --since-minutes 120`) passed for recent Telegram request flow (accepted/completed parity observed).
 - [x] Scheduler diagnostics confirm trigger path is healthy; current missed Apple report cause remains upstream provider timeout (`HTTP 502 timeout`) on `task-1770913720773-AFDA0B`.
 - [x] Live scheduler diagnostics snapshot captured (`nanoclaw-hostctl scheduler-diagnostics`): host healthy, both recurring tasks active, `next_run` values advancing correctly (`2026-02-19T00:00:00Z`, `2026-02-19T00:30:00Z`).
@@ -263,6 +279,7 @@ This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, w
 - [x] Decided not to ship paging/fallback workarounds for FocusRelay due-date filter timeout; surfaced failure transparently while upstream fix was in flight.
 - [x] Added serialized dev command `nanoclaw-devctl rebuild-and-restart` with repo lock to prevent concurrent devctl SwiftPM operations that can trigger llbuild SQLite build-db contention.
 - [x] Started passive (no extra LLM prompt) soak baseline at `2026-02-18 17:17 +0800`; both scheduled tasks active with next runs `2026-02-19T00:00:00Z` and `2026-02-19T00:30:00Z`.
+- [x] Added Swift Testing coverage for devctl static-build reliability helpers (retry classifier + warm build path).
 
 ## Parity Tools and Skills
 
@@ -288,16 +305,59 @@ This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, w
 ## Next Priority Queue
 
 1. Re-run daily scheduled-report soak across two cycles and verify trigger + delivery evidence in logs/DB.
-2. Validate OmniFocus due-today Telegram ask end-to-end against FocusRelay upstream timeout patch after Homebrew upgrade.
-3. Keep using serialized runtime update flow by default for local validation:
+2. Keep using serialized runtime update flow by default for local validation (`done and adopted as standard on 2026-02-19`):
    - `swift run nanoclaw-devctl rebuild-and-restart slim`
+3. Finalize Swift-native dev build reliability hardening (`done on 2026-02-19`):
+   - build orchestration remains in `nanoclaw-devctl` (no control-loop shell fallback)
+   - warm static build path + transient retry guard active
+   - one clean end-to-end `rebuild-and-restart slim` validated
 4. Continue MCP usability polish (cursor UX + human-readable rendering) only when tied to observed user friction; avoid speculative over-architecture.
+5. Run production-readiness gate check and publish a short go/no-go report in `PRODUCTION_READINESS.md` after queue items 1-4 are stable.
+6. Dependency hardening quick win (`done 2026-02-19`):
+   - Root cause recap:
+     - we switched the `slim` build path from containerized `swift:6.2.3` (glibc) to static Linux SDK (musl) in `nanoclaw-devctl`.
+     - this surfaced a latent Conduit Linux import assumption (`os(Linux) -> import Glibc`) that previously stayed hidden in glibc-only build mode.
+   - Decision:
+     - keep static SDK workflow (it improved build determinism in this repo after repeated containerized SwiftPM contention/cache failures).
+     - remove local editable `Packages/Swarm` from root dependency graph and pin remote Swarm + Conduit revisions for reproducible builds.
+   - Implementation details:
+     - fork: `https://github.com/deverman/Conduit`
+     - commit: `b84f1abeee399645bc14e11872e4e7e741c9dc17`
+     - branch: `musl-libc-import-20260219`
+     - change: `canImport(Glibc)` / `canImport(Musl)` import guard in `DeviceCapabilities.swift`.
+     - Swarm fork: `https://github.com/deverman/Swarm`
+     - Swarm commit: `def222ee68681667a6d3b7a497180454b064e61e` (pins Conduit fork revision)
+     - root `Package.swift` now uses remote pinned Swarm revision (no `package(path: "Packages/Swarm")` in active graph).
+     - root `Package.resolved` refreshed and `swift build --product nanoclaw-agent` passed.
+   - Follow-up:
+     - open upstream PR to `christopherkarani/Conduit` and replace fork pin with upstream tag/revision once merged.
+     - open upstream PR to `christopherkarani/Swarm` and replace fork pin with upstream tag/revision once merged.
+     - keep this note because this repo previously had musl friction and the compatibility requirement is still relevant.
+
+### Soak Checkpoint (2026-02-19)
+
+- [x] Cycle 1 evidence captured:
+  - `task-1770913720773-AFDA0B` executed and delivered successfully at `2026-02-19T00:03:53Z`.
+  - `next_run` advanced to `2026-02-20T00:00:00Z`.
+- [x] Scheduler trigger path verified from host diagnostics/logs (`poll` enqueue + queue processing + run logs).
+- [x] Post-restart diagnostics snapshot captured (`nanoclaw-hostctl scheduler-diagnostics` on 2026-02-19):
+  - host healthy (`nanoclaw-host` running, socket valid)
+  - Apple report task still active with next run `2026-02-20T00:00:00Z`
+  - prior success evidence retained (`2026-02-19T00:03:53Z`)
+- [ ] Cycle 2 pending (next window on `2026-02-20`), then re-check:
+  - `scheduler-diagnostics`
+  - `scheduled_tasks` row advancement
+  - `task_run_logs` outcome for both recurring tasks
+- [x] Noted transient failure cluster on `task-1771244294918-8232D9` at `00:30/00:45/00:50Z` caused by `network_offline`; retry policy fired as designed.
 
 ## Backlog
 
 1. Repository identity update after stabilization:
    - evaluate project rename and standalone non-fork repo branding
    - align package/product naming only after runtime/doc stabilization completes
+2. OmniFocus due-today Telegram E2E validation against FocusRelay timeout patch:
+   - defer until external workstream is complete
+   - validate no timeout/error path through MCP bridge before promoting to active priority
 
 ## Immediate Operator Command Set
 

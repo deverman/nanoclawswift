@@ -1,6 +1,6 @@
 # Production Readiness
 
-Updated: 2026-02-18
+Updated: 2026-02-19
 
 ## Runtime Baseline
 
@@ -24,6 +24,32 @@ Production runtime is Swift-first:
 4. Telegram smoke succeeds with owner DM.
 5. No stale-doc CI violations from docs consistency guard.
 
+## Go/No-Go Gate (Operator Checklist)
+
+Mark each gate `pass` / `fail` with evidence:
+
+1. Build + restart reliability (`pass` requires one clean serialized run):
+   - `swift run nanoclaw-devctl rebuild-and-restart slim`
+2. Host health:
+   - `swift run nanoclaw-hostctl status`
+3. Scheduler diagnostics and due-task visibility:
+   - `swift run nanoclaw-hostctl scheduler-diagnostics`
+4. Scheduled task DB evidence:
+   - `sqlite3 store/messages.db "SELECT id,status,next_run,last_run,last_result FROM scheduled_tasks ORDER BY id;"`
+   - `sqlite3 store/messages.db "SELECT task_id,run_at,status,duration_ms,substr(result,1,120),substr(error,1,120) FROM task_run_logs ORDER BY run_at DESC LIMIT 10;"`
+5. MCP runtime visibility in Telegram:
+   - `show mcp status`
+   - `please use mcp_host_cli server <server> args <command>`
+6. Pagination UX:
+   - run a paged MCP command, then `show more`, then `show more 3`
+7. Rate-limit safety:
+   - verify `NANOCLAW_PROVIDER_RPM_LIMIT` is set to a safe value for production load.
+
+Go decision:
+
+- `GO` if all gates pass.
+- `NO-GO` if any gate fails; capture blocker + owner in `IMPLEMENTATION_PLAN.md`.
+
 ## Security Gates
 
 1. Only allowlisted env vars are passed into containers.
@@ -41,6 +67,7 @@ Production runtime is Swift-first:
 - Typing heartbeat lifecycle cleanup for long-running requests
 - Provider RPM throttle to reduce 429 bursts
 - Optional fallback provider route
+- Serialized runtime update flow (`nanoclaw-devctl rebuild-and-restart slim`) to avoid concurrent build-db contention
 
 ## Key Environment Settings
 
@@ -61,6 +88,11 @@ Recommended for safety/reliability:
 - `NANOCLAW_QUEUE_JOB_WATCHDOG_MS`
 - `NANOCLAW_SESSION_JANITOR_INTERVAL_SEC`
 - `NANOCLAW_STALE_CLAIM_REAP_AGE_SEC`
+
+Build/restart tuning:
+
+- `NANOCLAW_DEVCTL_BUILD_TIMEOUT_SEC`
+- `NANOCLAW_DEVCTL_CONTAINER_BUILD_TIMEOUT_SEC`
 
 ## Known Operational Risks
 
@@ -101,3 +133,4 @@ Recommended for safety/reliability:
 - Attachment send path: ready (live smoke still recommended)
 - MCP runtime wiring: ready in startup path (container + host bridge)
 - Multi-channel: intentionally deferred
+- Pending before final production go/no-go: complete next scheduler soak cycle evidence and re-run gate checklist
