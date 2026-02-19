@@ -293,6 +293,12 @@ This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, w
    - `swift run nanoclaw-devctl rebuild-and-restart slim`
 4. Continue MCP usability polish (cursor UX + human-readable rendering) only when tied to observed user friction; avoid speculative over-architecture.
 
+## Backlog
+
+1. Repository identity update after stabilization:
+   - evaluate project rename and standalone non-fork repo branding
+   - align package/product naming only after runtime/doc stabilization completes
+
 ## Immediate Operator Command Set
 
 1. Scheduler health snapshot:

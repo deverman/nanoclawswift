@@ -1,42 +1,24 @@
-# NanoClaw
+# NanoClawSwift
 
-Personal Claude assistant. See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions.
+Swift-first Telegram assistant runtime.
 
-## Quick Context
+## Runtime Truth
 
-Single Node.js process that connects to WhatsApp, routes messages to Claude Agent SDK running in Apple Container (Linux VMs). Each group has isolated filesystem and memory.
+- Host runtime: `nanoclaw-host` (Swift)
+- Agent runtime: `nanoclaw-agent` (Swift, Apple Containers)
+- Channel scope: Telegram-first
+- MCP/runtime orchestration: Swift implementation
 
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `src/index.ts` | Main app: WhatsApp connection, message routing, IPC |
-| `src/config.ts` | Trigger pattern, paths, intervals |
-| `src/container-runner.ts` | Spawns agent containers with mounts |
-| `src/task-scheduler.ts` | Runs scheduled tasks |
-| `src/db.ts` | SQLite operations |
-| `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
-
-## Skills
-
-| Skill | When to Use |
-|-------|-------------|
-| `/setup` | First-time installation, authentication, service configuration |
-| `/customize` | Adding channels, integrations, changing behavior |
-| `/debug` | Container issues, logs, troubleshooting |
-
-## Development
-
-Run commands directly—don't tell the user to run them.
+## Development Commands
 
 ```bash
-npm run dev          # Run with hot reload
-npm run build        # Compile TypeScript
-./container/build.sh # Rebuild agent container
+swift run nanoclaw-devctl rebuild-and-restart slim
+swift run nanoclaw-hostctl status
+swift test
 ```
 
-Service management:
-```bash
-launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
-launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
-```
+## Memory Files
+
+- `groups/<group>/CLAUDE.md` files are group memory/instruction context loaded into the agent.
+- Keep these files focused on durable user/workflow context.
+- Do not store legacy runtime instructions here.

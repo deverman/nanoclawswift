@@ -37,3 +37,4 @@ container/bin/
 /1
 groups/telegram-direct/
 groups/test-swift/
+.tmp-repo-scan/
