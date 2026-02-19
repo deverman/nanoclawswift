@@ -40,6 +40,14 @@ private struct ProcessResult {
 }
 
 private enum DevRuntime {
+    static var buildTimeoutSeconds: TimeInterval {
+        readTimeoutEnv(name: "NANOCLAW_DEVCTL_BUILD_TIMEOUT_SEC", defaultValue: 10 * 60)
+    }
+
+    static var containerBuildTimeoutSeconds: TimeInterval {
+        readTimeoutEnv(name: "NANOCLAW_DEVCTL_CONTAINER_BUILD_TIMEOUT_SEC", defaultValue: 10 * 60)
+    }
+
     static var repoRoot: String {
         FileManager.default.currentDirectoryPath
     }
@@ -61,7 +69,8 @@ private enum DevRuntime {
         _ executable: String,
         _ arguments: [String],
         cwd: String? = nil,
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        timeout: TimeInterval? = nil
     ) throws -> ProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -77,7 +86,29 @@ private enum DevRuntime {
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
-        process.waitUntilExit()
+        if let timeout {
+            let start = Date()
+            while process.isRunning {
+                if Date().timeIntervalSince(start) > timeout {
+                    process.terminate()
+                    let graceDeadline = Date().addingTimeInterval(3.0)
+                    while process.isRunning && Date() < graceDeadline {
+                        Thread.sleep(forTimeInterval: 0.1)
+                    }
+                    if process.isRunning {
+                        Darwin.kill(process.processIdentifier, SIGKILL)
+                    }
+                    let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    throw DevCtlError.commandFailed(
+                        "Command timed out after \(Int(timeout))s: \(executable) \(arguments.joined(separator: " "))\n\(out)\(err)"
+                    )
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        } else {
+            process.waitUntilExit()
+        }
 
         let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -88,9 +119,10 @@ private enum DevRuntime {
         _ executable: String,
         _ arguments: [String],
         cwd: String? = nil,
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        timeout: TimeInterval? = nil
     ) throws -> ProcessResult {
-        let result = try run(executable, arguments, cwd: cwd, environment: environment)
+        let result = try run(executable, arguments, cwd: cwd, environment: environment, timeout: timeout)
         if result.status != 0 {
             throw DevCtlError.commandFailed(
                 "Command failed: \(executable) \(arguments.joined(separator: " "))\n\(result.stderr)"
@@ -115,6 +147,26 @@ private enum DevRuntime {
         defer { flock(lockFD, LOCK_UN) }
 
         return try body()
+    }
+
+    static func withTemporaryDirectory<T>(prefix: String, _ body: (String) throws -> T) throws -> T {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        return try body(tempRoot.path)
+    }
+
+    private static func readTimeoutEnv(name: String, defaultValue: TimeInterval) -> TimeInterval {
+        guard let raw = ProcessInfo.processInfo.environment[name],
+              let parsed = TimeInterval(raw),
+              parsed >= 30
+        else {
+            return defaultValue
+        }
+        return parsed
     }
 }
 
@@ -385,7 +437,6 @@ private func runBuildAgentImage(mode: String, imageName: String) throws {
     }
 
     let repoRoot = DevRuntime.repoRoot
-    let scriptPath = "\(repoRoot)/container"
     let tag = "\(imageName):\(normalizedMode)"
     let containerCLI = DevRuntime.preferredContainerCLI
 
@@ -394,21 +445,34 @@ private func runBuildAgentImage(mode: String, imageName: String) throws {
     print("Tag:  \(tag)\n")
 
     if normalizedMode == "slim" {
-        print("Step 1: Building Linux executable product in swift:6.2.3...")
-        _ = try DevRuntime.requireSuccess(
-            containerCLI,
-            [
-                "run", "--rm", "--memory", "8g",
-                "-v", "\(repoRoot):/work",
-                "-w", "/work",
-                "docker.io/library/swift:6.2.3",
-                "sh", "-lc",
-                "swift build -c release --product nanoclaw-agent --skip-update --disable-automatic-resolution && cp .build/release/nanoclaw-agent /work/.build/linux-output-nanoclaw-agent"
-            ],
-            cwd: scriptPath
-        )
-
+        print("Step 1: Building Linux executable via Swift static SDK...")
+        let staticBuildPath = staticLinuxBuildPath(repoRoot: repoRoot)
         let outputPath = "\(repoRoot)/.build/linux-output-nanoclaw-agent"
+
+        do {
+            let staticBuildOutput = try runStaticLinuxBuild(
+                repoRoot: repoRoot,
+                buildPath: staticBuildPath,
+                timeout: DevRuntime.buildTimeoutSeconds
+            )
+            // Dockerfile.slim expects this fixed host path.
+            _ = try DevRuntime.requireSuccess("cp", [staticBuildOutput, outputPath], cwd: repoRoot)
+        } catch {
+            let details = String(describing: error)
+            guard shouldRetryStaticLinuxBuildFailure(details) else {
+                throw error
+            }
+            print("Static Linux build failed with a transient error; cleaning build path and retrying once...")
+            try? FileManager.default.removeItem(atPath: staticBuildPath)
+            let staticBuildOutput = try runStaticLinuxBuild(
+                repoRoot: repoRoot,
+                buildPath: staticBuildPath,
+                timeout: max(DevRuntime.buildTimeoutSeconds, 20 * 60)
+            )
+            // Dockerfile.slim expects this fixed host path.
+            _ = try DevRuntime.requireSuccess("cp", [staticBuildOutput, outputPath], cwd: repoRoot)
+        }
+
         guard FileManager.default.fileExists(atPath: outputPath) else {
             throw DevCtlError.fileNotFound("Build artifact missing at \(outputPath)")
         }
@@ -423,11 +487,78 @@ private func runBuildAgentImage(mode: String, imageName: String) throws {
                 "-t", tag,
                 "."
             ],
-            cwd: repoRoot
+            cwd: repoRoot,
+            timeout: DevRuntime.containerBuildTimeoutSeconds
         )
     } else {
         throw DevCtlError.commandFailed("Static mode is not yet migrated. Use slim mode.")
     }
 
     print("\nBuild complete: \(tag)")
+}
+
+func staticLinuxBuildPath(repoRoot: String) -> String {
+    "\(repoRoot)/.build/linux-static-sdk"
+}
+
+func shouldRetryStaticLinuxBuildFailure(_ details: String) -> Bool {
+    let normalized = details.lowercased()
+    let transientMarkers = [
+        "timed out after",
+        "sqlitebuilddb.cpp",
+        "org.swift.swiftpm/repositories",
+        "indexstoredb",
+        "unknown package",
+    ]
+    return transientMarkers.contains { normalized.contains($0) }
+}
+
+private func runStaticLinuxBuild(repoRoot: String, buildPath: String, timeout: TimeInterval) throws -> String {
+    try FileManager.default.createDirectory(
+        at: URL(fileURLWithPath: buildPath),
+        withIntermediateDirectories: true
+    )
+    _ = try DevRuntime.requireSuccess(
+        "swift",
+        staticLinuxBuildArguments(buildPath: buildPath),
+        cwd: repoRoot,
+        timeout: timeout
+    )
+
+    let staticBuildOutput = try resolveLinuxAgentBinary(buildPath: buildPath)
+    guard FileManager.default.fileExists(atPath: staticBuildOutput) else {
+        throw DevCtlError.fileNotFound("Build artifact missing at \(staticBuildOutput)")
+    }
+    return staticBuildOutput
+}
+
+func staticLinuxBuildArguments(buildPath: String) -> [String] {
+    [
+        "build",
+        "-c", "release",
+        "--product", "nanoclaw-agent",
+        "--skip-update",
+        "--disable-automatic-resolution",
+        "--swift-sdk", "swift-6.2.3-RELEASE_static-linux-0.0.1",
+        "--build-path", buildPath,
+    ]
+}
+
+func resolveLinuxAgentBinary(buildPath: String) throws -> String {
+    let exact = "\(buildPath)/nanoclaw-agent"
+    if FileManager.default.fileExists(atPath: exact) {
+        return exact
+    }
+
+    guard let enumerator = FileManager.default.enumerator(atPath: buildPath) else {
+        throw DevCtlError.fileNotFound("Build path does not exist: \(buildPath)")
+    }
+
+    for case let path as String in enumerator {
+        if URL(fileURLWithPath: path).lastPathComponent == "nanoclaw-agent" {
+            return "\(buildPath)/\(path)"
+        }
+    }
+
+    throw DevCtlError.fileNotFound("Could not locate nanoclaw-agent under \(buildPath)")
 }

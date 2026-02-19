@@ -34,7 +34,7 @@ echo ""
 
 # Build with static SDK (use correct SDK name)
 swift build -c release \
-    --target nanoclaw-agent \
+    --product nanoclaw-agent \
     --swift-sdk swift-6.2.3-RELEASE_static-linux-0.0.1 \
     --build-path "$BUILD_DIR"
 

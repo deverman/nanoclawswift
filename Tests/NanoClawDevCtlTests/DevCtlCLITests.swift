@@ -1,4 +1,5 @@
 import ArgumentParser
+import Foundation
 import Testing
 
 @testable import NanoClawDevCtl
@@ -69,4 +70,49 @@ func testVerifyTelegramSoakParsingExplicitArgs() throws {
     #expect(command.chatJid == "telegram_1@direct")
     #expect(command.sinceMinutes == 30)
     #expect(command.minEvents == 5)
+}
+
+@Test
+func testStaticLinuxBuildArgumentsUseProductAndSdk() {
+    let args = staticLinuxBuildArguments(buildPath: ".build/linux/release")
+    #expect(args.contains("--product"))
+    #expect(args.contains("nanoclaw-agent"))
+    #expect(args.contains("--skip-update"))
+    #expect(args.contains("--disable-automatic-resolution"))
+    #expect(args.contains("--swift-sdk"))
+    #expect(args.contains("swift-6.2.3-RELEASE_static-linux-0.0.1"))
+    #expect(args.contains("--build-path"))
+    #expect(args.contains(".build/linux/release"))
+}
+
+@Test
+func testResolveLinuxAgentBinaryFindsNestedArtifact() throws {
+    let tempRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nanoclaw-devctl-test-\(UUID().uuidString)")
+    let nested = tempRoot.appendingPathComponent("aarch64-swift-linux-musl/release", isDirectory: true)
+    try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+    let binary = nested.appendingPathComponent("nanoclaw-agent")
+    try Data("x".utf8).write(to: binary)
+    defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+    let resolved = try resolveLinuxAgentBinary(buildPath: tempRoot.path)
+    #expect(resolved == binary.path)
+}
+
+@Test
+func testStaticLinuxBuildPathUsesWarmCacheLocation() {
+    let path = staticLinuxBuildPath(repoRoot: "/tmp/repo")
+    #expect(path == "/tmp/repo/.build/linux-static-sdk")
+}
+
+@Test
+func testRetryClassifierMatchesKnownTransientBuildFailures() {
+    #expect(shouldRetryStaticLinuxBuildFailure("Command timed out after 600s: swift build ..."))
+    #expect(shouldRetryStaticLinuxBuildFailure("Assertion failed: (db_), function attachDB, file SQLiteBuildDB.cpp, line 125"))
+    #expect(shouldRetryStaticLinuxBuildFailure("fatal: cannot change to '/Users/me/Library/org.swift.swiftpm/repositories'"))
+}
+
+@Test
+func testRetryClassifierSkipsDeterministicCompileFailures() {
+    #expect(!shouldRetryStaticLinuxBuildFailure("error: cannot find type 'FooBar' in scope"))
 }
