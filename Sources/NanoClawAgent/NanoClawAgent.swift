@@ -804,7 +804,11 @@ public actor NanoClawAgent: Agent {
 
         guard let nextCursor = Self.extractNextCursor(fromRawOutput: rawOutput) else {
             lastMCPHostCLIPagination = nil
-            lastMCPHostCLIPaginationExhaustedNotice = nil
+            if isCursorRequest, itemCount >= 0 {
+                lastMCPHostCLIPaginationExhaustedNotice = "No additional items were returned for the next page. You’ve reached the end (or the cursor is stale)."
+            } else {
+                lastMCPHostCLIPaginationExhaustedNotice = nil
+            }
             return
         }
 
@@ -1872,6 +1876,7 @@ Reply with the exact task ID, for example: "Please \(action.rawValue) task \(sor
     nonisolated private static func isPaginationContinuationPrompt(_ input: String) -> Bool {
         let patterns = [
             #"^\s*(?:please\s+)?show\s+more(?:\s+(?:results|items|tasks))?(?:\s+\d{1,3})?\s*[.!?]?\s*$"#,
+            #"^\s*(?:please\s+)?show\s+me\s+more(?:\s+(?:results|items|tasks))?(?:\s+\d{1,3})?\s*[.!?]?\s*$"#,
             #"^\s*(?:please\s+)?(?:next|next\s+page)(?:\s+\d{1,3})?\s*[.!?]?\s*$"#,
             #"^\s*(?:please\s+)?continue(?:\s+(?:results|items|tasks))?(?:\s+\d{1,3})?\s*[.!?]?\s*$"#
         ]
@@ -1883,7 +1888,7 @@ Reply with the exact task ID, for example: "Please \(action.rawValue) task \(sor
         let lowered = input.lowercased()
         guard let rawValue = firstCapture(
             in: lowered,
-            pattern: #"^\s*(?:please\s+)?(?:show\s+more|next(?:\s+page)?|continue)(?:\s+(?:results|items|tasks))?\s+(\d{1,3})\s*[.!?]?\s*$"#
+            pattern: #"^\s*(?:please\s+)?(?:show\s+(?:me\s+)?more|next(?:\s+page)?|continue)(?:\s+(?:results|items|tasks))?\s+(\d{1,3})\s*[.!?]?\s*$"#
         ),
         let parsed = Int(rawValue) else {
             return nil

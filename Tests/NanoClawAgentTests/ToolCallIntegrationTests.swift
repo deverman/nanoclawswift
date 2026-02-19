@@ -561,6 +561,56 @@ func testShowMoreAfterEmptyNextPageReturnsNoAdditionalItemsMessage() async throw
 }
 
 @Test
+func testShowMoreAfterCursorPageWithoutNextCursorReturnsNoAdditionalItemsMessage() async throws {
+    let provider = SequencedInferenceProvider(outputs: [])
+    let recorder = MCPHostCLISequenceRecorder(outputs: [
+        #"{"nextCursor":"5","items":[{"name":"Task 1","id":"t1"}]}"#,
+        #"{"items":[{"name":"Task 2","id":"t2"}]}"#
+    ])
+    let agent = await NanoClawAgent(
+        groupFolder: "/tmp/test",
+        instructions: "Test",
+        tools: [MCPHostCLISequencedTool(recorder: recorder)],
+        memory: nil,
+        inferenceProvider: provider,
+        configurationName: "TestAgent"
+    )
+
+    _ = try await agent.run("Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 5")
+    let firstMore = try await agent.run("show more")
+    #expect(firstMore.output.contains("Task 2"))
+    let secondMore = try await agent.run("show more")
+    #expect(secondMore.output.contains("No additional items were returned"))
+}
+
+@Test
+func testShowMeMorePhraseIsAcceptedAsPaginationContinuation() async throws {
+    let provider = SequencedInferenceProvider(outputs: [])
+    let recorder = MCPHostCLISequenceRecorder(outputs: [
+        #"{"nextCursor":"5","items":[{"name":"Task 1","id":"t1"}]}"#,
+        #"{"nextCursor":"10","items":[{"name":"Task 2","id":"t2"}]}"#
+    ])
+    let agent = await NanoClawAgent(
+        groupFolder: "/tmp/test",
+        instructions: "Test",
+        tools: [MCPHostCLISequencedTool(recorder: recorder)],
+        memory: nil,
+        inferenceProvider: provider,
+        configurationName: "TestAgent"
+    )
+
+    _ = try await agent.run("Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 5")
+    let second = try await agent.run("show me more")
+    #expect(second.output.contains("Task 2"))
+
+    let calls = await recorder.callArguments
+    #expect(calls.count == 2)
+    let secondArgs = calls[1]["args"]?.arrayValue?.compactMap(\.stringValue) ?? []
+    #expect(secondArgs.contains("--cursor"))
+    #expect(secondArgs.contains("5"))
+}
+
+@Test
 func testShowMoreRecoversFromEmptyCursorPageUsingExpandedLimitFallback() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let recorder = MCPHostCLISequenceRecorder(outputs: [
