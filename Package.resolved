@@ -1,5 +1,5 @@
 {
-  "originHash" : "b5a179c82e1c280cf98d16e6b28d92560e3c2ea7b85f6b53e79bfe85c473d601",
+  "originHash" : "e9d5a7be57f935f4c7027c2edb62cc2fe6a4a09e926c2fc3979135e4407a53c8",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -8,6 +8,14 @@
       "state" : {
         "revision" : "4b99975677236d13f0754339864e5360142ff5a1",
         "version" : "1.30.3"
+      }
+    },
+    {
+      "identity" : "conduit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/deverman/Conduit.git",
+      "state" : {
+        "revision" : "b84f1abeee399645bc14e11872e4e7e741c9dc17"
       }
     },
     {
@@ -53,6 +61,14 @@
       "state" : {
         "revision" : "328a211b3bdc8bdd41a40a3d4112ed6b79358fa4",
         "version" : "2.20.1"
+      }
+    },
+    {
+      "identity" : "swarm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/deverman/Swarm.git",
+      "state" : {
+        "revision" : "def222ee68681667a6d3b7a497180454b064e61e"
       }
     },
     {

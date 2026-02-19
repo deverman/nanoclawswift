@@ -34,8 +34,8 @@ let package = Package(
         ),
     ],
     dependencies: [
-        // SwiftAgents - vendored for local dependency control on macOS 26 migration.
-        .package(path: "Packages/Swarm"),
+        // SwiftAgents pinned to fork revision for reproducible dependency resolution.
+        .package(url: "https://github.com/deverman/Swarm.git", revision: "def222ee68681667a6d3b7a497180454b064e61e"),
         
         // CLI argument parsing
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
