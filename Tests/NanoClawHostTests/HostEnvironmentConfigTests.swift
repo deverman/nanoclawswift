@@ -66,6 +66,7 @@ func testHostEnvironmentConfigUsesDefaultsWhenUnsetOrInvalid() {
     #expect(config.prewarmLimit == 3)
     #expect(config.workingAckEnabled == true)
     #expect(config.workingAckThresholdMs == 8000)
+    #expect(config.workingAckRepeatIntervalMs == 30000)
     #expect(config.latencyWindowSize == 200)
     #expect(config.latencySLOP50Ms == 15000)
     #expect(config.latencySLOP95Ms == 60000)
@@ -97,6 +98,7 @@ func testHostEnvironmentConfigLoadsHostRuntimeServiceAndContainerPassthroughValu
             "NANOCLAW_PREWARM_LIMIT": "11",
             "NANOCLAW_WORKING_ACK_ENABLED": "0",
             "NANOCLAW_WORKING_ACK_THRESHOLD_MS": "4200",
+            "NANOCLAW_WORKING_ACK_REPEAT_INTERVAL_MS": "15000",
             "NANOCLAW_LATENCY_WINDOW_SIZE": "123",
             "NANOCLAW_LATENCY_SLO_P50_MS": "17000",
             "NANOCLAW_LATENCY_SLO_P95_MS": "92000",
@@ -138,6 +140,7 @@ func testHostEnvironmentConfigLoadsHostRuntimeServiceAndContainerPassthroughValu
     #expect(config.prewarmLimit == 11)
     #expect(config.workingAckEnabled == false)
     #expect(config.workingAckThresholdMs == 4200)
+    #expect(config.workingAckRepeatIntervalMs == 15000)
     #expect(config.latencyWindowSize == 123)
     #expect(config.latencySLOP50Ms == 17000)
     #expect(config.latencySLOP95Ms == 92000)

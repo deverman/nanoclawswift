@@ -28,6 +28,7 @@ actor NanoClawHostService {
     private let prewarmLimit: Int
     private let workingAckEnabled: Bool
     private let workingAckThresholdMs: Int
+    private let workingAckRepeatIntervalMs: Int
     private let latencyWindowSize: Int
     private let latencySLOP50Ms: Int
     private let latencySLOP95Ms: Int
@@ -91,6 +92,10 @@ actor NanoClawHostService {
         self.workingAckThresholdMs = max(
             1000,
             hostEnvironment.workingAckThresholdMs
+        )
+        self.workingAckRepeatIntervalMs = max(
+            5000,
+            hostEnvironment.workingAckRepeatIntervalMs
         )
         self.latencyWindowSize = max(
             20,
@@ -1312,17 +1317,33 @@ Andy: Your scheduled task run failed.
         let channel = job.channel
         let chatJID = job.chatJID
         let thresholdNs = UInt64(max(workingAckThresholdMs, 1000)) * 1_000_000
+        let repeatNs = UInt64(max(workingAckRepeatIntervalMs, 1000)) * 1_000_000
 
         if let existing = workingAckTasks.removeValue(forKey: requestID) {
             existing.cancel()
         }
         workingAckTasks[requestID] = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: thresholdNs)
-            await self?.emitWorkingAckIfPending(
-                requestID: requestID,
-                channel: channel,
-                chatJID: chatJID
-            )
+            do {
+                try await Task.sleep(nanoseconds: thresholdNs)
+            } catch {
+                return
+            }
+
+            var repeatUpdate = false
+            while !Task.isCancelled {
+                await self?.emitWorkingAckIfPending(
+                    requestID: requestID,
+                    channel: channel,
+                    chatJID: chatJID,
+                    repeatUpdate: repeatUpdate
+                )
+                repeatUpdate = true
+                do {
+                    try await Task.sleep(nanoseconds: repeatNs)
+                } catch {
+                    break
+                }
+            }
         }
     }
 
@@ -1331,8 +1352,13 @@ Andy: Your scheduled task run failed.
         task.cancel()
     }
 
-    private func emitWorkingAckIfPending(requestID: String, channel: String, chatJID: String) async {
-        guard let task = workingAckTasks.removeValue(forKey: requestID) else { return }
+    private func emitWorkingAckIfPending(
+        requestID: String,
+        channel: String,
+        chatJID: String,
+        repeatUpdate: Bool
+    ) async {
+        guard let task = workingAckTasks[requestID] else { return }
         if task.isCancelled || Task.isCancelled || shuttingDown {
             return
         }
@@ -1340,12 +1366,23 @@ Andy: Your scheduled task run failed.
             _ = try store.enqueueOutbound(
                 channel: channel,
                 chatJID: chatJID,
-                text: "\(assistantName): Working on it, still processing your request..."
+                text: Self.workingAckMessage(assistantName: assistantName, repeatUpdate: repeatUpdate)
             )
-            logger.info("Sent delayed working acknowledgment request=\(requestID) channel=\(channel) chat=\(chatJID)")
+            logger.info(
+                "Sent working acknowledgment request=\(requestID) channel=\(channel) chat=\(chatJID) repeat=\(repeatUpdate)"
+            )
         } catch {
-            logger.warning("Failed to enqueue delayed working acknowledgment request=\(requestID): \(error.localizedDescription)")
+            logger.warning(
+                "Failed to enqueue working acknowledgment request=\(requestID) repeat=\(repeatUpdate): \(error.localizedDescription)"
+            )
         }
+    }
+
+    nonisolated static func workingAckMessage(assistantName: String, repeatUpdate: Bool) -> String {
+        if repeatUpdate {
+            return "\(assistantName): Still working on your request, thanks for your patience..."
+        }
+        return "\(assistantName): Working on it, still processing your request..."
     }
 
     private func recordLatency(totalMs: Int, timedOut: Bool) {

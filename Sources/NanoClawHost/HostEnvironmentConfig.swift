@@ -43,6 +43,7 @@ struct HostEnvironmentConfig {
     let prewarmLimit: Int
     let workingAckEnabled: Bool
     let workingAckThresholdMs: Int
+    let workingAckRepeatIntervalMs: Int
     let latencyWindowSize: Int
     let latencySLOP50Ms: Int
     let latencySLOP95Ms: Int
@@ -150,6 +151,7 @@ struct HostEnvironmentConfig {
             prewarmLimit: int("NANOCLAW_PREWARM_LIMIT", 3),
             workingAckEnabled: parseEnabled(string("NANOCLAW_WORKING_ACK_ENABLED", "")),
             workingAckThresholdMs: int("NANOCLAW_WORKING_ACK_THRESHOLD_MS", 8000),
+            workingAckRepeatIntervalMs: int("NANOCLAW_WORKING_ACK_REPEAT_INTERVAL_MS", 30000),
             latencyWindowSize: int("NANOCLAW_LATENCY_WINDOW_SIZE", 200),
             latencySLOP50Ms: int("NANOCLAW_LATENCY_SLO_P50_MS", 15000),
             latencySLOP95Ms: int("NANOCLAW_LATENCY_SLO_P95_MS", 60000),
