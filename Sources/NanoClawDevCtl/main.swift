@@ -520,7 +520,7 @@ private func runStaticLinuxBuild(repoRoot: String, buildPath: String, timeout: T
     )
     _ = try DevRuntime.requireSuccess(
         "swift",
-        staticLinuxBuildArguments(buildPath: buildPath),
+        try staticLinuxBuildArguments(buildPath: buildPath),
         cwd: repoRoot,
         timeout: timeout
     )
@@ -532,7 +532,7 @@ private func runStaticLinuxBuild(repoRoot: String, buildPath: String, timeout: T
     return staticBuildOutput
 }
 
-func staticLinuxBuildArguments(buildPath: String) -> [String] {
+func staticLinuxBuildArguments(buildPath: String, linuxTargetTriple: String) -> [String] {
     [
         "build",
         "-c", "release",
@@ -540,8 +540,41 @@ func staticLinuxBuildArguments(buildPath: String) -> [String] {
         "--skip-update",
         "--disable-automatic-resolution",
         "--swift-sdk", "swift-6.2.3-RELEASE_static-linux-0.0.1",
+        "--triple", linuxTargetTriple,
         "--build-path", buildPath,
     ]
+}
+
+func staticLinuxBuildArguments(buildPath: String) throws -> [String] {
+    let machine = currentMachineIdentifier()
+    guard let triple = inferredLinuxMuslTargetTriple(machine: machine) else {
+        throw ValidationError(
+            "Unsupported host architecture '\(machine)' for static Linux build. " +
+            "Supported host architectures: arm64, x86_64."
+        )
+    }
+    return staticLinuxBuildArguments(buildPath: buildPath, linuxTargetTriple: triple)
+}
+
+func inferredLinuxMuslTargetTriple(machine: String) -> String? {
+    switch machine.lowercased() {
+    case "arm64", "aarch64":
+        return "aarch64-swift-linux-musl"
+    case "x86_64", "amd64":
+        return "x86_64-swift-linux-musl"
+    default:
+        return nil
+    }
+}
+
+func currentMachineIdentifier() -> String {
+    var name = utsname()
+    uname(&name)
+    return withUnsafePointer(to: &name.machine) { pointer in
+        pointer.withMemoryRebound(to: CChar.self, capacity: 1) { cString in
+            String(cString: cString)
+        }
+    }
 }
 
 func resolveLinuxAgentBinary(buildPath: String) throws -> String {

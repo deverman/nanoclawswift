@@ -73,16 +73,34 @@ func testVerifyTelegramSoakParsingExplicitArgs() throws {
 }
 
 @Test
-func testStaticLinuxBuildArgumentsUseProductAndSdk() {
-    let args = staticLinuxBuildArguments(buildPath: ".build/linux/release")
+func testStaticLinuxBuildArgumentsUseProductSdkAndTriple() {
+    let args = staticLinuxBuildArguments(
+        buildPath: ".build/linux/release",
+        linuxTargetTriple: "aarch64-swift-linux-musl"
+    )
     #expect(args.contains("--product"))
     #expect(args.contains("nanoclaw-agent"))
     #expect(args.contains("--skip-update"))
     #expect(args.contains("--disable-automatic-resolution"))
     #expect(args.contains("--swift-sdk"))
     #expect(args.contains("swift-6.2.3-RELEASE_static-linux-0.0.1"))
+    #expect(args.contains("--triple"))
+    #expect(args.contains("aarch64-swift-linux-musl"))
     #expect(args.contains("--build-path"))
     #expect(args.contains(".build/linux/release"))
+}
+
+@Test
+func testInferredLinuxMuslTargetTripleMapsKnownArchitectures() {
+    #expect(inferredLinuxMuslTargetTriple(machine: "arm64") == "aarch64-swift-linux-musl")
+    #expect(inferredLinuxMuslTargetTriple(machine: "aarch64") == "aarch64-swift-linux-musl")
+    #expect(inferredLinuxMuslTargetTriple(machine: "x86_64") == "x86_64-swift-linux-musl")
+    #expect(inferredLinuxMuslTargetTriple(machine: "amd64") == "x86_64-swift-linux-musl")
+}
+
+@Test
+func testInferredLinuxMuslTargetTripleRejectsUnknownArchitecture() {
+    #expect(inferredLinuxMuslTargetTriple(machine: "riscv64") == nil)
 }
 
 @Test

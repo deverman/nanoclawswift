@@ -1,54 +1,51 @@
 # NanoClawSwift
 
-Swift-first personal AI assistant for Telegram, running with host/container isolation on Apple Containers.
+Run a personal AI agent on your Mac with Apple Containers isolation, Telegram control, and MCP tool and Skills access.
 
-## Current Runtime (as of 2026-02-18)
+NanoClawSwift is designed for Mac users who want OpenClaw-style autonomy with a setup that feels local, private, and operationally safe.
 
-- Swift host runtime (`nanoclaw-host`) and Swift container agent (`nanoclaw-agent`)
-- Telegram-only inbound/outbound channel (polling)
-- Continuous typing heartbeat with lifecycle cleanup
-- Telegram-safe message splitting (4096 limit-aware)
-- Skills tools: `list_skills`, `activate_skill`, `deactivate_skill`, `sync_skills`
-  - Default roots: `CODEX_HOME/skills`, `~/.codex/skills`, `~/.claude/skills`
-- Parity tools: `todo_read`, `todo_write`, `sub_agent`, `get_task_history`, `export_chat`
-- Memory tools: `read_memory`, `write_memory` (`chat` and `global` scopes)
-- `send_message` supports text, attachments, and captions
-- MCP runtime bootstrap from `.mcp.json` on agent startup
-- Host MCP bridge for `runtime: "host"` servers in `.mcp.json` (no code changes required per server)
-- Generic host MCP CLI tool: `mcp_host_cli` (for token-cheap direct CLI calls)
-- MCP reload tool: `mcp_reload` (re-reads `.mcp.json` and reboots host MCP registrations)
-- FocusRelay compatibility tools remain available: `focusrelay_inbox_tasks`, `focusrelay_cli`, `focusrelay_bridge_health`
-- Multi-channel support is intentionally deferred
+## Why NanoClawSwift
 
-## Architecture
+- Swift-native runtime with a Mac-first operational model.
+- Safety by default: agent execution is isolated in Apple Containers while the host stays observable and in control.
+- Telegram as your control surface: run your agent from your phone with low friction.
+- MCP-native extensibility: connect your existing MCP servers without writing adapter glue.
+- Production-minded tooling: built-in lifecycle commands for build, restart, and diagnostics.
 
-```text
-Telegram -> Swift Telegram Adapter (host) -> Host Queue/Scheduler/DB -> Container Session -> Swift Agent
-```
+## Core Capabilities
 
-Host responsibilities:
-- Telegram polling and outbound delivery
-- Scheduling and task state in SQLite
-- Container session lifecycle, watchdog, janitor, startup catch-up
-- Optional host relay for provider/network edge cases
-
-Agent responsibilities:
-- Route selection (`ToolCallingAgent` vs `PlanAndExecuteAgent`)
-- Tool execution with side-effect controls
-- Persistent session + memory context
-- MCP tool registration/execution
+| Area | What you get |
+| --- | --- |
+| Channels | Telegram inbound/outbound messaging (polling) |
+| Runtime | Swift host (`nanoclaw-host`) + Swift container agent (`nanoclaw-agent`) |
+| Reliability | Typing heartbeat, message splitting for Telegram limits, scheduler + task state |
+| Memory | `read_memory` / `write_memory` in `chat` and `global` scopes |
+| Skills | `list_skills`, `activate_skill`, `deactivate_skill`, `sync_skills` |
+| Planning/Parity Tools | `todo_read`, `todo_write`, `sub_agent`, `get_task_history`, `export_chat` |
+| Attachments | `send_message` supports text, captions, and file attachments |
+| MCP | Automatic MCP server bootstrap from `.mcp.json` with host/container runtimes |
+| MCP Operations | `mcp_reload` and `mcp_host_cli` for live reload and direct server CLI workflows |
 
 ## Prerequisites
 
 - macOS 26
-- Swift 6.2.3 toolchain
-- Apple `container` CLI installed and working
-- Telegram bot token and owner ID
+- Swift 6.2.3
+- Apple `container` CLI installed and working ([GitHub](https://github.com/apple/container))
+- Telegram bot token and Telegram owner/user ID
 - At least one model provider API key (for example Moonshot/Kimi)
 
-## Configuration
+## Install and Get Started (Mac)
 
-Set environment in your shell (or `.env` for local hostctl loading):
+### 1) Clone and enter repo
+
+```bash
+git clone -b swift-agent https://github.com/deverman/nanoclawswift
+cd nanoclawswift
+```
+
+### 2) Configure environment
+
+Set these in your shell profile (`~/.zshrc`) or your current session:
 
 ```bash
 export TELEGRAM_BOT_TOKEN="<bot-token>"
@@ -58,144 +55,208 @@ export MODEL_PROVIDER="kimi"
 export MODEL_NAME="kimi-k2.5"
 export MOONSHOT_API_KEY="<api-key>"
 
-# Optional reliability/limits
+# Optional reliability/fallback controls
 export NANOCLAW_PROVIDER_RPM_LIMIT="18"
 export NANOCLAW_FALLBACK_PROVIDER="openai"
 export NANOCLAW_FALLBACK_MODEL="gpt-4.1-mini"
 export NANOCLAW_FALLBACK_API_KEY="<fallback-key>"
 ```
 
-## Build and Run
+### 3) Validate build
 
 ```bash
 swift test
-swift run nanoclaw-devctl rebuild-and-restart slim --foreground
 ```
 
-Background mode:
+### 4) Start Apple Container system service
+
+```bash
+container system start
+```
+
+If image builds fail with an XPC connection error, run:
+
+```bash
+container system start
+```
+
+### 5) Build agent image and start runtime
 
 ```bash
 swift run nanoclaw-devctl rebuild-and-restart slim
-swift run nanoclaw-hostctl status
 ```
 
-Stop host:
+Run foreground mode if you want live logs while starting:
 
 ```bash
-swift run nanoclaw-hostctl stop
+swift run nanoclaw-devctl rebuild-and-restart slim --foreground
 ```
 
-## Telegram Smoke Test
-
-1. Send a direct Telegram message to your bot: `Please list tasks`
-2. Confirm response arrives.
-3. Confirm host health:
+### 6) Check runtime health
 
 ```bash
 swift run nanoclaw-hostctl status
 ```
 
-4. Check host log if needed:
+### 7) Send first Telegram command
+
+Message your bot:
+
+```text
+Please list tasks
+```
+
+If you need logs:
 
 ```bash
 tail -n 200 /tmp/nanoclaw-host.log
 ```
 
-## Memory and Attachment Smoke
+## Executable Targets (`Package.swift`)
 
-- Memory read:
-  - `Please use the read_memory tool`
-- Memory write:
-  - `Please use write_memory with scope chat and mode append`
-- Attachment send:
-  - Ask the assistant to call `send_message` with `attachment_path` and optional `caption`.
+- `nanoclaw-agent`: container-side agent runtime that selects/executes tools and agents.
+- `nanoclaw-host`: host runtime (Telegram I/O, scheduler, persistence, container lifecycle).
+- `nanoclaw-hostctl`: host lifecycle controller (`start`, `stop`, `restart`, `status`, diagnostics).
+- `nanoclaw-devctl`: developer/operator workflows (build image, rebuild/restart, soak verification).
+- `session-summary`: utility CLI for session summary workflows.
 
-## MCP Setup
+Run any executable with:
 
-Place `.mcp.json` in either:
-- `/workspace/group/.mcp.json` (inside container session)
+```bash
+swift run <executable-name> --help
+```
+
+Examples:
+
+```bash
+swift run nanoclaw-hostctl --help
+swift run nanoclaw-devctl --help
+```
+## CLI Quick Reference
+
+### `nanoclaw-devctl`
+
+```bash
+swift run nanoclaw-devctl --help
+```
+
+Main workflows:
+- `build-agent-image`: build Linux agent + package container image.
+- `rebuild-and-restart`: serialized rebuild + host restart for end-to-end updates.
+- `download-linux-binary`: fetch prebuilt Linux `nanoclaw-agent` from releases.
+- `verify-telegram-soak`: check recent Telegram handling invariants.
+
+### `nanoclaw-hostctl`
+
+```bash
+swift run nanoclaw-hostctl --help
+```
+
+Main workflows:
+- `start`, `stop`, `restart`, `status`
+- `scheduler-diagnostics`
+
+## How To: Use Skills
+
+### Inspect available skills from chat
+
+In Telegram, ask the agent:
+
+```text
+Please use list_skills
+```
+
+### Activate a skill
+
+```text
+Please activate_skill for <skill-name>
+```
+
+### Deactivate a skill
+
+```text
+Please deactivate_skill for <skill-name>
+```
+
+### Re-sync skill discovery roots
+
+```text
+Please run sync_skills
+```
+
+Default skill roots include:
+- `CODEX_HOME/skills`
+- `~/.codex/skills`
+- `~/.claude/skills`
+
+## How To: Connect MCP Servers and Use MCP CLI
+
+### 1) Add `.mcp.json`
+
+Place `.mcp.json` in one of:
+- `/workspace/group/.mcp.json`
 - `/workspace/project/.mcp.json`
-- or set `NANOCLAW_MCP_CONFIG_PATH`.
+- or point to a custom file with `NANOCLAW_MCP_CONFIG_PATH`
 
-At startup, the agent loads MCP servers and exposes bridged tools with names like `mcp_<server>_<tool>`.
-
-Supported server modes:
-- `runtime: "container"` + `transport: "stdio"`: launched in container runtime.
-- `runtime: "host"` + `transport: "stdio"`: launched through the Swift host MCP bridge.
-
-Example `.mcp.json`:
+Generic example:
 
 ```json
 {
   "mcpServers": {
-    "focusrelay": {
+    "myserver": {
       "runtime": "host",
       "transport": "stdio",
-      "command": "/opt/homebrew/bin/focusrelay",
+      "command": "/absolute/path/to/server-binary",
       "args": ["serve"]
     }
   }
 }
 ```
 
-After you update `.mcp.json`, new servers/tools are picked up on the next agent run. Rebuild/restart is only needed when NanoClawSwift code changes.
-For mixed host/container operations and pagination workflow, see `docs/MCP_OPERATIONS.md`.
+Runtime modes:
+- `runtime: "container"` + `transport: "stdio"`: server runs inside container runtime.
+- `runtime: "host"` + `transport: "stdio"`: server runs on macOS host via host MCP bridge.
 
-## FocusRelay Setup (OmniFocus on macOS Host)
+### 2) Reload MCP without full rebuild
 
-FocusRelay is macOS-only, so configure it as a host MCP server in `.mcp.json` and NanoClawSwift will bridge it automatically.
+From Telegram:
 
-1. Install FocusRelay on host (Homebrew):
-
-```bash
-brew tap deverman/focus-relay
-brew install focusrelay
-focusrelay bridge-health-check
+```text
+Please run mcp_reload
 ```
 
-2. Optional host env overrides:
+### 3) Verify MCP status in chat
 
-```bash
-export NANOCLAW_FOCUSRELAY_ENABLED="true"
-export NANOCLAW_FOCUSRELAY_COMMAND="/opt/homebrew/bin/focusrelay"
+```text
+Please show mcp status
 ```
 
-3. Rebuild + restart runtime:
+### 4) Call MCP server CLI through NanoClaw
+
+Use `mcp_host_cli` from chat when you want direct, token-cheap server calls:
+
+```text
+Please use mcp_host_cli server <server-id> args <command> <arg1> <arg2>
+```
+
+Example:
+
+```text
+Please use mcp_host_cli server myserver args list-tools
+```
+
+## Operational Notes
+
+- Rebuild container image when changes touch:
+  - `Sources/NanoClawAgent/**`
+  - `container/**`
+  - `Package.swift` or `Package.resolved`
+- Restart host when changes touch:
+  - `Sources/NanoClawHost/**`
+- For end-to-end behavior changes, use:
 
 ```bash
 swift run nanoclaw-devctl rebuild-and-restart slim
-```
-
-4. Telegram smoke:
-- `Please show mcp status`
-- `Please reload mcp`
-- `What are the tasks in my inbox?`
-- `Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 10`
-- `show more` (or `show more 5` to change page size)
-
-5. Optional parity verification (FocusRelay repo vs loaded MCP tools):
-
-```bash
-# Expected tool names from FocusRelay server source
-python3 - <<'PY'
-import re, pathlib
-src = pathlib.Path("/Users/deverman/Documents/Code/swift/FocusRelayMCP/Sources/FocusRelayServer/FocusRelayServer.swift").read_text()
-expected = sorted({
-    n for n in re.findall(r'name:\\s*"([a-z0-9_\\-]+)"', src)
-    if n in {
-        "list_tasks", "get_task", "list_projects", "list_tags",
-        "get_task_counts", "get_project_counts",
-        "debug_inbox_probe", "debug_inbox_probe_alt", "bridge_health_check"
-    }
-})
-print("\n".join(expected))
-PY
-
-# Loaded MCP tools from NanoClaw host bridge
-curl -sS -X POST http://127.0.0.1:18081/mcp/host/bootstrap \
-  -H 'content-type: application/json' \
-  -d @<(jq '{servers:[.mcpServers|to_entries[]|{id:.key,command:.value.command,args:(.value.args//[]),env:(.value.env//{}),cwd:(.value.cwd//"")}]} ' .mcp.json) \
-  | jq -r '.servers[] | select(.id=="focusrelay") | .tools[].name' | sort -u
 ```
 
 ## Project Docs
