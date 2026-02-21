@@ -124,8 +124,11 @@ private enum DevRuntime {
     ) throws -> ProcessResult {
         let result = try run(executable, arguments, cwd: cwd, environment: environment, timeout: timeout)
         if result.status != 0 {
+            let combinedOutput = [result.stdout, result.stderr]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
             throw DevCtlError.commandFailed(
-                "Command failed: \(executable) \(arguments.joined(separator: " "))\n\(result.stderr)"
+                "Command failed: \(executable) \(arguments.joined(separator: " "))\n\(combinedOutput)"
             )
         }
         if !result.stdout.isEmpty { print(result.stdout, terminator: "") }
