@@ -49,7 +49,7 @@ func testDownloadLinuxBinaryParsingExplicitArgs() throws {
 @Test
 func testVerifyTelegramSoakParsingDefaults() throws {
     let command = try NanoClawDevCtl.VerifyTelegramSoak.parse([])
-    #expect(command.dbPath.hasSuffix("/store/messages.db"))
+    #expect(command.dbPath.hasSuffix("/.config/clawclaw/store/messages.db"))
     #expect(command.logFile == "/tmp/nanoclaw-host.log")
     #expect(command.chatJid == "telegram_135937217@direct")
     #expect(command.sinceMinutes == 15)

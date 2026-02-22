@@ -173,6 +173,13 @@ private enum DevRuntime {
     }
 }
 
+private func defaultStateRootPath() -> String {
+    URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent(".config")
+        .appendingPathComponent("clawclaw")
+        .path
+}
+
 extension NanoClawDevCtl {
     struct BuildAgentImage: ParsableCommand {
         static let configuration = CommandConfiguration(
@@ -305,7 +312,7 @@ extension NanoClawDevCtl {
         )
 
         @Option(name: .long, help: "Path to host SQLite DB.")
-        var dbPath: String = "\(DevRuntime.repoRoot)/store/messages.db"
+        var dbPath: String = "\(defaultStateRootPath())/store/messages.db"
 
         @Option(name: .long, help: "Path to host runtime log file.")
         var logFile: String = "/tmp/nanoclaw-host.log"

@@ -16,6 +16,13 @@ private enum HostCtlConstants {
     static let logFile = "/tmp/nanoclaw-host.log"
 }
 
+private func defaultStateRootPath() -> String {
+    URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent(".config")
+        .appendingPathComponent("clawclaw")
+        .path
+}
+
 private enum HostCtlError: Error, LocalizedError {
     case startFailed(String)
     case binaryMissing(String)
@@ -286,7 +293,7 @@ extension NanoClawHostCtl {
         @Option(name: .long)
         var logFile: String = HostCtlConstants.logFile
 
-        @Option(name: .long, help: "Optional explicit SQLite DB path (defaults to <projectRoot>/store/messages.db).")
+        @Option(name: .long, help: "Optional explicit SQLite DB path (defaults to ~/.config/clawclaw/store/messages.db).")
         var dbPath: String?
 
         @Option(name: .long, help: "Optional task id filter.")
@@ -304,7 +311,7 @@ extension NanoClawHostCtl {
             )
             let pid = readPID(path: pidFile)
             let healthy = runtime.isHealthy()
-            let resolvedDBPath = dbPath ?? "\(projectRoot)/store/messages.db"
+            let resolvedDBPath = dbPath ?? "\(defaultStateRootPath())/store/messages.db"
             let maxRows = max(1, min(limit, 100))
             let escapedTaskID = taskID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 

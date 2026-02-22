@@ -87,10 +87,14 @@ private func runHost(options: ParsedHostOptions, hostEnvironment: HostEnvironmen
         }
         let logger = Logger(label: "nanoclaw.host")
 
-        let groups = options.groupsDir ?? URL(fileURLWithPath: options.projectRoot).appendingPathComponent("groups").path
-        let data = options.dataDir ?? URL(fileURLWithPath: options.projectRoot).appendingPathComponent("data").path
-        let store = options.storeDir ?? URL(fileURLWithPath: options.projectRoot).appendingPathComponent("store").path
+        let stateRoot = defaultStateRootPath()
+        let groups = options.groupsDir ?? URL(fileURLWithPath: stateRoot).appendingPathComponent("groups").path
+        let data = options.dataDir ?? URL(fileURLWithPath: stateRoot).appendingPathComponent("data").path
+        let store = options.storeDir ?? URL(fileURLWithPath: stateRoot).appendingPathComponent("store").path
         let dbPath = URL(fileURLWithPath: store).appendingPathComponent("messages.db").path
+        try FileManager.default.createDirectory(atPath: groups, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: data, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: store, withIntermediateDirectories: true)
         let assistantName = hostEnvironment.assistantName
         let telegramBotToken = hostEnvironment.telegramBotToken
         let telegramOwnerIDRaw = hostEnvironment.telegramOwnerIDRaw
@@ -239,6 +243,13 @@ private func runHost(options: ParsedHostOptions, hostEnvironment: HostEnvironmen
         llmRelayServer?.stop()
         await telegramInboundAdapter?.stop()
         await service.shutdown()
+}
+
+private func defaultStateRootPath() -> String {
+    URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent(".config")
+        .appendingPathComponent("clawclaw")
+        .path
 }
 
 NanoClawHostCLI.main()

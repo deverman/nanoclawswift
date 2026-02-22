@@ -36,6 +36,11 @@ NanoClawSwift is designed for Mac users who want OpenClaw-style autonomy with a 
 
 ## Install and Get Started (Mac)
 
+Runtime state is stored in `~/.config/clawclaw` by default:
+- `~/.config/clawclaw/groups`
+- `~/.config/clawclaw/store`
+- `~/.config/clawclaw/data`
+
 ### 1) Clone and enter repo
 
 ```bash
