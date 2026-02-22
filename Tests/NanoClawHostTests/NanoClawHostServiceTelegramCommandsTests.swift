@@ -31,12 +31,19 @@ private func makeTelegramCommandTestPaths() throws -> TelegramCommandTestPaths {
     )
 }
 
-private func makeTelegramCommandService(paths: TelegramCommandTestPaths) throws -> NanoClawHostService {
-    let hostEnvironment = HostEnvironmentConfig.load(from: [
+private func makeTelegramCommandService(
+    paths: TelegramCommandTestPaths,
+    ownerID: String? = nil
+) throws -> NanoClawHostService {
+    var environment: [String: String] = [
         "ASSISTANT_NAME": "Andy",
         "NANOCLAW_PREWARM_GROUP_SESSIONS": "false",
         "NANOCLAW_WORKING_ACK_ENABLED": "false"
-    ])
+    ]
+    if let ownerID {
+        environment["TELEGRAM_OWNER_ID"] = ownerID
+    }
+    let hostEnvironment = HostEnvironmentConfig.load(from: environment)
     let runtimeConfig = HostRuntimeConfig(
         projectRoot: paths.root.path,
         groupsDir: paths.groupsDir.path,
@@ -65,11 +72,12 @@ private func makeTelegramCommandService(paths: TelegramCommandTestPaths) throws 
 private func makeInboundEvent(
     content: String,
     messageID: String,
-    attachments: [InboundAttachment]? = nil
+    attachments: [InboundAttachment]? = nil,
+    chatJID: String = "telegram_42@direct"
 ) -> InboundEventRequest {
     InboundEventRequest(
         channel: "telegram",
-        chat_jid: "telegram_42@direct",
+        chat_jid: chatJID,
         sender: "owner",
         sender_name: "owner",
         content: content,
@@ -95,13 +103,13 @@ private func claimOutboundMessages(_ service: NanoClawHostService) async throws 
     return decoded.messages
 }
 
-private func fetchTaskRows(dbPath: String) throws -> [(id: String, status: String, scheduleType: String, scheduleValue: String)] {
+private func fetchTaskRows(dbPath: String) throws -> [(id: String, chatJID: String, status: String, scheduleType: String, scheduleValue: String)] {
     let db = try DatabaseQueue(path: dbPath)
     return try db.read { db in
         let rows = try Row.fetchAll(
             db,
             sql: """
-            SELECT id, status, schedule_type, schedule_value
+            SELECT id, chat_jid, status, schedule_type, schedule_value
             FROM scheduled_tasks
             ORDER BY created_at DESC;
             """
@@ -109,12 +117,34 @@ private func fetchTaskRows(dbPath: String) throws -> [(id: String, status: Strin
         return rows.map { row in
             (
                 id: row["id"],
+                chatJID: row["chat_jid"],
                 status: row["status"],
                 scheduleType: row["schedule_type"],
                 scheduleValue: row["schedule_value"]
             )
         }
     }
+}
+
+@Test
+func testTelegramDirectScheduleBindsTaskToOwnerChatWhenConfigured() async throws {
+    let paths = try makeTelegramCommandTestPaths()
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+
+    let service = try makeTelegramCommandService(paths: paths, ownerID: "135937217")
+
+    _ = await service.ingestInboundEvent(
+        makeInboundEvent(
+            content: "/schedule 08:30 Review inbox",
+            messageID: "m-owner-bind",
+            chatJID: "telegram_42@direct"
+        )
+    )
+
+    let createdTasks = try fetchTaskRows(dbPath: paths.dbPath)
+    #expect(createdTasks.count == 1)
+    let createdTask = try #require(createdTasks.first)
+    #expect(createdTask.chatJID == "telegram_135937217@direct")
 }
 
 @Test

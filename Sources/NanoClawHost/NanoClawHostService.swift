@@ -37,6 +37,7 @@ actor NanoClawHostService {
     private let scheduledRetryMaxAttempts: Int
     private let scheduledRetryInitialBackoffSec: Int
     private let scheduledRetryMaxBackoffSec: Int
+    private let ownerDirectChatJID: String?
     private let telegramOutboundCoordinator: SwiftTelegramOutboundCoordinator?
     private let telegramTypingHeartbeat: TelegramTypingHeartbeat?
     private let inboundMediaPipeline: TelegramInboundMediaPipeline?
@@ -118,6 +119,7 @@ actor NanoClawHostService {
             self.scheduledRetryInitialBackoffSec,
             hostEnvironment.scheduledRetryMaxBackoffSec
         )
+        self.ownerDirectChatJID = Self.ownerDirectChatJID(ownerID: hostEnvironment.telegramOwnerID)
         self.telegramOutboundPollMs = max(200, hostEnvironment.telegramOutboundPollMs)
         self.telegramOutboundBatchSize = max(1, min(hostEnvironment.telegramOutboundBatchSize, 50))
         let typingIntervalMs = hostEnvironment.telegramTypingIntervalMs
@@ -736,6 +738,22 @@ actor NanoClawHostService {
         return ipcOutboundCount == 0
     }
 
+    nonisolated static func ownerDirectChatJID(ownerID: Int64?) -> String? {
+        guard let ownerID else { return nil }
+        return "telegram_\(ownerID)@direct"
+    }
+
+    nonisolated static func normalizedScheduledTaskChatJID(
+        groupFolder: String,
+        targetChatJID: String,
+        ownerDirectChatJID: String?
+    ) -> String {
+        guard groupFolder == "telegram-direct", let ownerDirectChatJID else {
+            return targetChatJID
+        }
+        return ownerDirectChatJID
+    }
+
     nonisolated static func requiresPreRunTaskSnapshot(for prompt: String) -> Bool {
         let normalized = prompt.lowercased()
         let markers = [
@@ -1080,7 +1098,11 @@ actor NanoClawHostService {
         let row = ScheduledTaskRow(
             id: taskID,
             groupFolder: targetGroup.folder,
-            chatJID: targetGroup.jid,
+            chatJID: Self.normalizedScheduledTaskChatJID(
+                groupFolder: targetGroup.folder,
+                targetChatJID: targetGroup.jid,
+                ownerDirectChatJID: ownerDirectChatJID
+            ),
             prompt: prompt,
             scheduleType: scheduleType,
             scheduleValue: scheduleValue,
@@ -1815,7 +1837,11 @@ Andy: Your scheduled task run failed.
         let row = ScheduledTaskRow(
             id: taskID,
             groupFolder: sourceGroup.folder,
-            chatJID: sourceGroup.jid,
+            chatJID: Self.normalizedScheduledTaskChatJID(
+                groupFolder: sourceGroup.folder,
+                targetChatJID: sourceGroup.jid,
+                ownerDirectChatJID: ownerDirectChatJID
+            ),
             prompt: prompt,
             scheduleType: "cron",
             scheduleValue: cronValue,
