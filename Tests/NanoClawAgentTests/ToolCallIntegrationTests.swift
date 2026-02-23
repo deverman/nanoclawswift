@@ -471,6 +471,26 @@ func testShowMorePhraseDoesNotTriggerDeterministicPaginationPath() async throws 
 }
 
 @Test
+func testUnknownSlashCommandFallsBackToPlanAndExecute() async throws {
+    let provider = SequencedInferenceProvider(outputs: [
+        InferenceResponse(content: "llm-path", finishReason: .completed)
+    ])
+    let agent = await NanoClawAgent(
+        groupFolder: "/tmp/test",
+        instructions: "Test",
+        tools: [],
+        memory: nil,
+        inferenceProvider: provider,
+        configurationName: "TestAgent"
+    )
+
+    let result = try await agent.run("/whoami")
+    #expect(result.output == "final")
+    #expect(result.metadata["nanoclaw.execution_route"]?.stringValue == ExecutionRoute.planAndExecute.rawValue)
+    #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue != true)
+}
+
+@Test
 func testSlashMoreRecoversFromEmptyCursorPageUsingExpandedLimitFallback() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let recorder = MCPHostCLISequenceRecorder(outputs: [

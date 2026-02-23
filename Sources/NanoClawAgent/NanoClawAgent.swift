@@ -350,12 +350,9 @@ public actor NanoClawAgent: Agent {
         switch SlashCommandParser.parse(input) {
         case .notCommand:
             return nil
-        case .unknown(let name):
-            return AgentResult(
-                output: "Unknown command: \(name)\n\n\(Self.slashCommandHelpText())",
-                iterationCount: 1,
-                metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
-            )
+        case .unknown:
+            // Unknown slash commands are treated as normal prompts and handled by the LLM path.
+            return nil
         case .invalid(let usageError):
             return AgentResult(
                 output: "\(usageError.message)\nUsage: \(usageError.usage)\n\n\(Self.slashCommandHelpText())",
