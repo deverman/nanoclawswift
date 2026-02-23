@@ -20,7 +20,14 @@ enum ScheduledRunFailureClassifier {
         if text.contains("http 429") || text.contains("rate limit exceeded") {
             return .providerRateLimit
         }
-        if text.contains("http 502"), text.contains("timed out") || text.contains("timeout") {
+        let upstreamTimeout =
+            (text.contains("http 502") && text.contains("timed out"))
+            || text.contains("http 504")
+            || text.contains("timeout")
+            || text.contains("timed out waiting for response")
+            || text.contains("queue watchdog timed out")
+            || text.contains("watchdog timed out")
+        if upstreamTimeout {
             return .providerTimeout
         }
         if text.contains("internet connection appears to be offline")

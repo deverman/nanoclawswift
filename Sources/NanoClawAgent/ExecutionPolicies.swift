@@ -83,6 +83,14 @@ extension NanoClawAgent {
         boundedSetting("NANOCLAW_PLAN_ROUTE_MAX_TOOL_CALLS", default: 40, min: 1, max: 200)
     }
 
+    nonisolated static var scheduledToolRouteMaxToolCalls: Int {
+        boundedSetting("NANOCLAW_SCHEDULED_TOOL_ROUTE_MAX_TOOL_CALLS", default: 24, min: 1, max: 120)
+    }
+
+    nonisolated static var scheduledPlanRouteMaxToolCalls: Int {
+        boundedSetting("NANOCLAW_SCHEDULED_PLAN_ROUTE_MAX_TOOL_CALLS", default: 60, min: 1, max: 200)
+    }
+
     nonisolated static var sessionCompactionThreshold: Int {
         boundedSetting("NANOCLAW_SESSION_COMPACTION_THRESHOLD", default: 40, min: 10, max: 200)
     }
@@ -96,20 +104,24 @@ extension NanoClawAgent {
         boundedSetting("NANOCLAW_EMPTY_VISIBLE_RETRY_DELAY_MS", default: 250, min: 50, max: 2_000)
     }
 
-    nonisolated public static func loopBudgetPolicy(for route: ExecutionRoute, timeoutSeconds: Int) -> LoopBudgetPolicy {
+    nonisolated public static func loopBudgetPolicy(
+        for route: ExecutionRoute,
+        timeoutSeconds: Int,
+        isScheduledTask: Bool = false
+    ) -> LoopBudgetPolicy {
         let boundedTimeout = max(1, timeoutSeconds)
         switch route {
         case .toolCalling:
             return LoopBudgetPolicy(
                 maxIterations: toolRouteMaxIterations,
                 timeout: .seconds(boundedTimeout),
-                maxToolCalls: toolRouteMaxToolCalls
+                maxToolCalls: isScheduledTask ? scheduledToolRouteMaxToolCalls : toolRouteMaxToolCalls
             )
         case .planAndExecute:
             return LoopBudgetPolicy(
                 maxIterations: planRouteMaxIterations,
                 timeout: .seconds(boundedTimeout),
-                maxToolCalls: planRouteMaxToolCalls
+                maxToolCalls: isScheduledTask ? scheduledPlanRouteMaxToolCalls : planRouteMaxToolCalls
             )
         }
     }

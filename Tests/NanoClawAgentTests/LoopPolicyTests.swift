@@ -20,6 +20,30 @@ func testLoopBudgetPolicyForPlanAndExecuteRoute() {
 }
 
 @Test
+func testLoopBudgetPolicyForScheduledToolCallingRoute() {
+    let budget = NanoClawAgent.loopBudgetPolicy(
+        for: .toolCalling,
+        timeoutSeconds: 120,
+        isScheduledTask: true
+    )
+    #expect(budget.maxIterations == 16)
+    #expect(budget.maxToolCalls == 24)
+    #expect(budget.timeout == .seconds(120))
+}
+
+@Test
+func testLoopBudgetPolicyForScheduledPlanAndExecuteRoute() {
+    let budget = NanoClawAgent.loopBudgetPolicy(
+        for: .planAndExecute,
+        timeoutSeconds: 120,
+        isScheduledTask: true
+    )
+    #expect(budget.maxIterations == 40)
+    #expect(budget.maxToolCalls == 60)
+    #expect(budget.timeout == .seconds(120))
+}
+
+@Test
 func testSwarmIterationCeilingExceedsPolicyBudgets() {
     let toolBudget = NanoClawAgent.loopBudgetPolicy(for: .toolCalling, timeoutSeconds: 120)
     let planBudget = NanoClawAgent.loopBudgetPolicy(for: .planAndExecute, timeoutSeconds: 120)

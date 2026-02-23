@@ -47,6 +47,7 @@ public actor NanoClawAgent: Agent {
     private let baseToolAgent: ToolCallingAgent
     private let basePlanAndExecuteAgent: PlanAndExecuteAgent
     private let providerRoute: String
+    private let isScheduledTaskRun: Bool
     private let mcpRuntimeExecutor: MCPRuntimeExecutor?
     private var lastMCPHostCLIPagination: MCPPaginationState? = nil
     private var lastMCPHostCLIPaginationExhaustedNotice: String? = nil
@@ -68,6 +69,7 @@ public actor NanoClawAgent: Agent {
         let provider = await Self.buildInferenceProvider(config: config)
         self.inferenceProvider = provider
         self.providerRoute = "\(config.provider.rawValue)/\(config.model.rawValue)"
+        self.isScheduledTaskRun = false
 
         let claudeMemory = await CLAUDEMemory(groupFolder: groupFolder)
         self.memory = claudeMemory
@@ -159,6 +161,7 @@ public actor NanoClawAgent: Agent {
         let provider = await Self.buildInferenceProvider(config: config)
         self.inferenceProvider = provider
         self.providerRoute = "\(config.provider.rawValue)/\(config.model.rawValue)"
+        self.isScheduledTaskRun = isScheduledTask
 
         let claudeMemory = await CLAUDEMemory(groupFolder: groupFolder)
         self.memory = claudeMemory
@@ -250,6 +253,7 @@ public actor NanoClawAgent: Agent {
         self.memory = memory
         self.inferenceProvider = inferenceProvider
         self.providerRoute = "custom"
+        self.isScheduledTaskRun = false
         self.mcpRuntimeExecutor = nil
         self.mcpStartupDiagnostics = []
         self.configuration = AgentConfiguration(name: configurationName)
@@ -432,7 +436,8 @@ public actor NanoClawAgent: Agent {
                 retryPolicy: Self.retryPolicy(for: .toolCalling),
                 loopBudget: Self.loopBudgetPolicy(
                     for: .toolCalling,
-                    timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout)
+                    timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
+                    isScheduledTask: isScheduledTaskRun
                 ),
                 extraMetadata: runSkillMetadata
             )
@@ -455,7 +460,8 @@ public actor NanoClawAgent: Agent {
                 retryPolicy: Self.retryPolicy(for: .toolCalling),
                 loopBudget: Self.loopBudgetPolicy(
                     for: .toolCalling,
-                    timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout)
+                    timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
+                    isScheduledTask: isScheduledTaskRun
                 ),
                 extraMetadata: runSkillMetadata
             )
@@ -482,7 +488,8 @@ public actor NanoClawAgent: Agent {
                 retryPolicy: Self.retryPolicy(for: .toolCalling),
                 loopBudget: Self.loopBudgetPolicy(
                     for: .toolCalling,
-                    timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout)
+                    timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
+                    isScheduledTask: isScheduledTaskRun
                 ),
                 extraMetadata: runSkillMetadata
             )
@@ -560,7 +567,8 @@ public actor NanoClawAgent: Agent {
                     retryPolicy: Self.retryPolicy(for: .toolCalling),
                     loopBudget: Self.loopBudgetPolicy(
                         for: .toolCalling,
-                        timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout)
+                        timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
+                        isScheduledTask: isScheduledTaskRun
                     ),
                     extraMetadata: runSkillMetadata
                 )
@@ -588,7 +596,8 @@ public actor NanoClawAgent: Agent {
                     retryPolicy: Self.retryPolicy(for: .toolCalling),
                     loopBudget: Self.loopBudgetPolicy(
                         for: .toolCalling,
-                        timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout)
+                        timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
+                        isScheduledTask: isScheduledTaskRun
                     ),
                     extraMetadata: runSkillMetadata
                 )
@@ -598,7 +607,8 @@ public actor NanoClawAgent: Agent {
         let route = Self.executionRoute(for: input)
         let loopBudget = Self.loopBudgetPolicy(
             for: route,
-            timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout)
+            timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
+            isScheduledTask: isScheduledTaskRun
         )
         let retryPolicy = Self.retryPolicy(for: route)
 

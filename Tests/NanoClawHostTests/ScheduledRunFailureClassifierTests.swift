@@ -23,6 +23,23 @@ func scheduledRunFailureClassifierMapsProviderTimeout() {
 }
 
 @Test
+func scheduledRunFailureClassifierMapsWatchdogAndContainerTimeoutsToProviderTimeout() {
+    let watchdogCause = ScheduledRunFailureClassifier.classify(
+        status: "error",
+        detail: "Queue watchdog timed out after 240000ms for request sched-task-123"
+    )
+    #expect(watchdogCause == .providerTimeout)
+    #expect(ScheduledRunFailureClassifier.isTransient(watchdogCause) == true)
+
+    let containerCause = ScheduledRunFailureClassifier.classify(
+        status: "error",
+        detail: "Timed out waiting for response (300000ms) for request sched-task-456."
+    )
+    #expect(containerCause == .providerTimeout)
+    #expect(ScheduledRunFailureClassifier.isTransient(containerCause) == true)
+}
+
+@Test
 func scheduledRunFailureClassifierMapsNetworkOffline() {
     let cause = ScheduledRunFailureClassifier.classify(
         status: "error",
