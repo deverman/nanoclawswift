@@ -190,42 +190,6 @@ struct MCPReloadProbeTool: Tool {
 }
 
 @Test
-func testToolCallLoopExecutesToolAndFinalResponse() async throws {
-    let recorder = ToolCallRecorder()
-    let tool = EchoTool(recorder: recorder)
-    let provider = SequencedInferenceProvider(outputs: [
-        InferenceResponse(
-            content: nil,
-            toolCalls: [
-                InferenceResponse.ParsedToolCall(
-                    id: UUID().uuidString,
-                    name: "echo",
-                    arguments: ["text": .string("hello")]
-                )
-            ],
-            finishReason: .toolCall,
-            usage: nil
-        ),
-        InferenceResponse(content: "final", finishReason: .completed)
-    ])
-
-    let agent = await NanoClawAgent(
-        groupFolder: "/tmp/test",
-        instructions: "Test",
-        tools: [tool],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result = try await agent.run("Hello")
-    #expect(result.output == "final")
-
-    let called = await recorder.called
-    #expect(called == true)
-}
-
-@Test
 func testExplicitListSkillsBypassesInferenceProviderLoop() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let agent = await NanoClawAgent(
@@ -237,7 +201,7 @@ func testExplicitListSkillsBypassesInferenceProviderLoop() async throws {
         configurationName: "TestAgent"
     )
 
-    let result = try await agent.run("Please use the list_skills tool")
+    let result = try await agent.run("/skills")
     #expect(result.output == "skills-ok")
     #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue == true)
 
@@ -257,48 +221,8 @@ func testExplicitMCPStatusBypassesInferenceProviderLoop() async throws {
         configurationName: "TestAgent"
     )
 
-    let result = try await agent.run("Please show mcp status")
+    let result = try await agent.run("/mcp-status")
     #expect(result.output == "mcp-ok")
-    #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue == true)
-
-    let toolCallGenerateCount = await provider.getToolCallGenerateCount()
-    #expect(toolCallGenerateCount == 0)
-}
-
-@Test
-func testInboxPromptBypassesInferenceProviderViaFocusRelayDeterministicRoute() async throws {
-    let provider = SequencedInferenceProvider(outputs: [])
-    let agent = await NanoClawAgent(
-        groupFolder: "/tmp/test",
-        instructions: "Test",
-        tools: [FocusRelayInboxProbeTool(output: "inbox-ok")],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result = try await agent.run("What are the tasks in my inbox?")
-    #expect(result.output == "inbox-ok")
-    #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue == true)
-
-    let toolCallGenerateCount = await provider.getToolCallGenerateCount()
-    #expect(toolCallGenerateCount == 0)
-}
-
-@Test
-func testExplicitFocusRelayCLISubcommandBypassesInferenceProviderLoop() async throws {
-    let provider = SequencedInferenceProvider(outputs: [])
-    let agent = await NanoClawAgent(
-        groupFolder: "/tmp/test",
-        instructions: "Test",
-        tools: [FocusRelayCLIProbeTool(output: "cli-ok")],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result = try await agent.run("Please use focusrelay_cli subcommand bridge-health-check")
-    #expect(result.output == "cli-ok")
     #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue == true)
 
     let toolCallGenerateCount = await provider.getToolCallGenerateCount()
@@ -317,7 +241,7 @@ func testExplicitMCPHostCLIInvocationBypassesInferenceProviderLoop() async throw
         configurationName: "TestAgent"
     )
 
-    let result = try await agent.run("Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true")
+    let result = try await agent.run("/mcp-cli focusrelay list-tasks --inbox-only true")
     #expect(result.output == "host-cli-ok")
     #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue == true)
 
@@ -337,7 +261,7 @@ func testExplicitMCPReloadBypassesInferenceProviderLoop() async throws {
         configurationName: "TestAgent"
     )
 
-    let result = try await agent.run("Please reload mcp")
+    let result = try await agent.run("/mcp-reload")
     #expect(result.output == "reload-ok")
     #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue == true)
 
@@ -357,33 +281,9 @@ func testExplicitMCPReloadWithConfigPathBypassesInferenceProviderLoop() async th
         configurationName: "TestAgent"
     )
 
-    let result = try await agent.run("Please use mcp_reload tool config_path /workspace/group/.mcp.json")
+    let result = try await agent.run("/mcp-reload /workspace/group/.mcp.json")
     #expect(result.output == "reload-path-ok")
     #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue == true)
-
-    let toolCallGenerateCount = await provider.getToolCallGenerateCount()
-    #expect(toolCallGenerateCount == 0)
-}
-
-@Test
-func testExplicitMCPBridgedListTasksRendersFriendlyOutput() async throws {
-    let provider = SequencedInferenceProvider(outputs: [])
-    let jsonOutput = #"{"nextCursor":"2","items":[{"name":"Task A","id":"a1"},{"name":"Task B","id":"b2"}]}"#
-    let agent = await NanoClawAgent(
-        groupFolder: "/tmp/test",
-        instructions: "Test",
-        tools: [MCPBridgedListTasksProbeTool(output: jsonOutput)],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result = try await agent.run("Please use mcp_focusrelay_list_tasks tool")
-    #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue == true)
-    #expect(result.output.contains("Found 2 item(s):"))
-    #expect(result.output.contains("1. Task A (id: a1)"))
-    #expect(result.output.contains("2. Task B (id: b2)"))
-    #expect(result.output.contains("Next cursor: 2"))
 
     let toolCallGenerateCount = await provider.getToolCallGenerateCount()
     #expect(toolCallGenerateCount == 0)
@@ -402,7 +302,7 @@ func testExplicitMCPHostCLIRendersFriendlyOutputForJSON() async throws {
         configurationName: "TestAgent"
     )
 
-    let result = try await agent.run("Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true")
+    let result = try await agent.run("/mcp-cli focusrelay list-tasks --inbox-only true")
     #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue == true)
     #expect(result.output.contains("Found 1 item(s):"))
     #expect(result.output.contains("1. Inbox Task (id: t1)"))
@@ -413,40 +313,7 @@ func testExplicitMCPHostCLIRendersFriendlyOutputForJSON() async throws {
 }
 
 @Test
-func testToolCallingRouteFormatsRawMCPJSONOutputForUser() async throws {
-    let jsonOutput = #"{"nextCursor":"2","items":[{"name":"Task A","id":"a1"},{"name":"Task B","id":"b2"}]}"#
-    let provider = SequencedInferenceProvider(outputs: [
-        InferenceResponse(
-            content: nil,
-            toolCalls: [
-                InferenceResponse.ParsedToolCall(
-                    id: UUID().uuidString,
-                    name: "mcp_focusrelay_list_tasks",
-                    arguments: [:]
-                )
-            ],
-            finishReason: .toolCall,
-            usage: nil
-        ),
-        InferenceResponse(content: jsonOutput, finishReason: .completed)
-    ])
-    let agent = await NanoClawAgent(
-        groupFolder: "/tmp/test",
-        instructions: "Test",
-        tools: [MCPBridgedListTasksProbeTool(output: jsonOutput)],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result = try await agent.run("Show me inbox tasks")
-    #expect(result.output.contains("Found 2 item(s):"))
-    #expect(result.output.contains("Task A"))
-    #expect(result.metadata["nanoclaw.mcp_output_formatted"]?.boolValue == true)
-}
-
-@Test
-func testExplicitMCPHostCLIPaginationAddsShowMoreHint() async throws {
+func testExplicitMCPHostCLIPaginationAddsSlashMoreHint() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let jsonOutput = #"{"nextCursor":"5","items":[{"name":"Inbox Task","id":"t1"}]}"#
     let agent = await NanoClawAgent(
@@ -458,14 +325,14 @@ func testExplicitMCPHostCLIPaginationAddsShowMoreHint() async throws {
         configurationName: "TestAgent"
     )
 
-    let result = try await agent.run("Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 5")
+    let result = try await agent.run("/mcp-cli focusrelay list-tasks --inbox-only true --limit 5")
     #expect(result.output.contains("Next cursor: 5"))
-    #expect(result.output.contains("show more"))
-    #expect(result.output.contains("show more <n>"))
+    #expect(result.output.contains("/more"))
+    #expect(result.output.contains("/more <n>"))
 }
 
 @Test
-func testShowMoreReusesLastMCPHostCLIInvocationWithCursor() async throws {
+func testSlashMoreReusesLastMCPHostCLIInvocationWithCursor() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let recorder = MCPHostCLISequenceRecorder(outputs: [
         #"{"nextCursor":"5","items":[{"name":"Task 1","id":"t1"}]}"#,
@@ -480,8 +347,8 @@ func testShowMoreReusesLastMCPHostCLIInvocationWithCursor() async throws {
         configurationName: "TestAgent"
     )
 
-    _ = try await agent.run("Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 5")
-    let second = try await agent.run("show more")
+    _ = try await agent.run("/mcp-cli focusrelay list-tasks --inbox-only true --limit 5")
+    let second = try await agent.run("/more")
     #expect(second.output.contains("Task 2"))
 
     let calls = await recorder.callArguments
@@ -493,7 +360,7 @@ func testShowMoreReusesLastMCPHostCLIInvocationWithCursor() async throws {
 }
 
 @Test
-func testShowMoreWithExplicitLimitOverridesPaginationLimit() async throws {
+func testSlashMoreWithExplicitLimitOverridesPaginationLimit() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let recorder = MCPHostCLISequenceRecorder(outputs: [
         #"{"nextCursor":"5","items":[{"name":"Task 1","id":"t1"}]}"#,
@@ -508,8 +375,8 @@ func testShowMoreWithExplicitLimitOverridesPaginationLimit() async throws {
         configurationName: "TestAgent"
     )
 
-    _ = try await agent.run("Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 5")
-    let second = try await agent.run("show more 2")
+    _ = try await agent.run("/mcp-cli focusrelay list-tasks --inbox-only true --limit 5")
+    let second = try await agent.run("/more 2")
     #expect(second.output.contains("Found 2 item(s):"))
 
     let calls = await recorder.callArguments
@@ -522,7 +389,7 @@ func testShowMoreWithExplicitLimitOverridesPaginationLimit() async throws {
 }
 
 @Test
-func testShowMoreWithoutPreviousPaginationReturnsHelpfulMessage() async throws {
+func testSlashMoreWithoutPreviousPaginationReturnsHelpfulMessage() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let agent = await NanoClawAgent(
         groupFolder: "/tmp/test",
@@ -533,12 +400,12 @@ func testShowMoreWithoutPreviousPaginationReturnsHelpfulMessage() async throws {
         configurationName: "TestAgent"
     )
 
-    let result = try await agent.run("show more")
+    let result = try await agent.run("/more")
     #expect(result.output.contains("No paginated MCP result"))
 }
 
 @Test
-func testShowMoreAfterEmptyNextPageReturnsNoAdditionalItemsMessage() async throws {
+func testSlashMoreAfterEmptyNextPageReturnsNoAdditionalItemsMessage() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let recorder = MCPHostCLISequenceRecorder(outputs: [
         #"{"nextCursor":"5","items":[{"name":"Task 1","id":"t1"}]}"#,
@@ -553,15 +420,15 @@ func testShowMoreAfterEmptyNextPageReturnsNoAdditionalItemsMessage() async throw
         configurationName: "TestAgent"
     )
 
-    _ = try await agent.run("Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 5")
-    let firstMore = try await agent.run("show more")
+    _ = try await agent.run("/mcp-cli focusrelay list-tasks --inbox-only true --limit 5")
+    let firstMore = try await agent.run("/more")
     #expect(firstMore.output.contains("No additional items were returned"))
-    let secondMore = try await agent.run("show more")
+    let secondMore = try await agent.run("/more")
     #expect(secondMore.output.contains("No additional items were returned"))
 }
 
 @Test
-func testShowMoreAfterCursorPageWithoutNextCursorReturnsNoAdditionalItemsMessage() async throws {
+func testSlashMoreAfterCursorPageWithoutNextCursorReturnsNoAdditionalItemsMessage() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let recorder = MCPHostCLISequenceRecorder(outputs: [
         #"{"nextCursor":"5","items":[{"name":"Task 1","id":"t1"}]}"#,
@@ -576,42 +443,35 @@ func testShowMoreAfterCursorPageWithoutNextCursorReturnsNoAdditionalItemsMessage
         configurationName: "TestAgent"
     )
 
-    _ = try await agent.run("Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 5")
-    let firstMore = try await agent.run("show more")
+    _ = try await agent.run("/mcp-cli focusrelay list-tasks --inbox-only true --limit 5")
+    let firstMore = try await agent.run("/more")
     #expect(firstMore.output.contains("Task 2"))
-    let secondMore = try await agent.run("show more")
+    let secondMore = try await agent.run("/more")
     #expect(secondMore.output.contains("No additional items were returned"))
 }
 
 @Test
-func testShowMeMorePhraseIsAcceptedAsPaginationContinuation() async throws {
-    let provider = SequencedInferenceProvider(outputs: [])
-    let recorder = MCPHostCLISequenceRecorder(outputs: [
-        #"{"nextCursor":"5","items":[{"name":"Task 1","id":"t1"}]}"#,
-        #"{"nextCursor":"10","items":[{"name":"Task 2","id":"t2"}]}"#
+func testShowMorePhraseDoesNotTriggerDeterministicPaginationPath() async throws {
+    let provider = SequencedInferenceProvider(outputs: [
+        InferenceResponse(content: "model-path", finishReason: .completed),
+        InferenceResponse(content: "model-path", finishReason: .completed)
     ])
     let agent = await NanoClawAgent(
         groupFolder: "/tmp/test",
         instructions: "Test",
-        tools: [MCPHostCLISequencedTool(recorder: recorder)],
+        tools: [MCPHostCLIProbeTool(output: #"{"nextCursor":"5","items":[{"name":"Task 1","id":"t1"}]}"#)],
         memory: nil,
         inferenceProvider: provider,
         configurationName: "TestAgent"
     )
 
-    _ = try await agent.run("Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 5")
-    let second = try await agent.run("show me more")
-    #expect(second.output.contains("Task 2"))
-
-    let calls = await recorder.callArguments
-    #expect(calls.count == 2)
-    let secondArgs = calls[1]["args"]?.arrayValue?.compactMap(\.stringValue) ?? []
-    #expect(secondArgs.contains("--cursor"))
-    #expect(secondArgs.contains("5"))
+    let result = try await agent.run("show more")
+    #expect(result.metadata["nanoclaw.execution_route"]?.stringValue == ExecutionRoute.planAndExecute.rawValue)
+    #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue != true)
 }
 
 @Test
-func testShowMoreRecoversFromEmptyCursorPageUsingExpandedLimitFallback() async throws {
+func testSlashMoreRecoversFromEmptyCursorPageUsingExpandedLimitFallback() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let recorder = MCPHostCLISequenceRecorder(outputs: [
         #"""
@@ -646,8 +506,8 @@ func testShowMoreRecoversFromEmptyCursorPageUsingExpandedLimitFallback() async t
         configurationName: "TestAgent"
     )
 
-    _ = try await agent.run("Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 5")
-    let second = try await agent.run("show more")
+    _ = try await agent.run("/mcp-cli focusrelay list-tasks --inbox-only true --limit 5")
+    let second = try await agent.run("/more")
     #expect(second.output.contains("Found 3 item(s):"))
     #expect(second.output.contains("Task 6"))
     #expect(second.output.contains("Task 8"))
@@ -667,39 +527,6 @@ func testShowMoreRecoversFromEmptyCursorPageUsingExpandedLimitFallback() async t
 }
 
 @Test
-func testPseudoToolSyntaxIsRejectedAndNotExecuted() async throws {
-    let recorder = ToolCallRecorder()
-    let tool = EchoTool(recorder: recorder)
-    let provider = SequencedInferenceProvider(outputs: [
-        InferenceResponse(
-            content: """
-            ```tool
-            schedule_task:0>{\"schedule_type\":\"recurring\",\"time\":\"08:00\"}
-            ```
-            """,
-            toolCalls: [],
-            finishReason: .completed,
-            usage: nil
-        )
-    ])
-
-    let agent = await NanoClawAgent(
-        groupFolder: "/tmp/test",
-        instructions: "Test",
-        tools: [tool],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result = try await agent.run("Please schedule this")
-    #expect(result.output.contains("could not execute that action"))
-
-    let called = await recorder.called
-    #expect(called == false)
-}
-
-@Test
 func testStructuredScheduleAndCancelPersistIPCRequests() async throws {
     let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let ipcDir = tempDir.appendingPathComponent("ipc")
@@ -707,40 +534,14 @@ func testStructuredScheduleAndCancelPersistIPCRequests() async throws {
     try FileManager.default.createDirectory(at: tasksDir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tempDir) }
 
-    let provider = SequencedInferenceProvider(outputs: [
-        InferenceResponse(
-            content: nil,
-            toolCalls: [
-                InferenceResponse.ParsedToolCall(
-                    id: UUID().uuidString,
-                    name: "schedule_task",
-                    arguments: [
-                        "description": .string("Morning report"),
-                        "schedule_type": .string("recurring"),
-                        "time": .string("08:00")
-                    ]
-                )
-            ],
-            finishReason: .toolCall,
-            usage: nil
-        ),
-        InferenceResponse(content: "scheduled", finishReason: .completed),
-        InferenceResponse(
-            content: nil,
-            toolCalls: [
-                InferenceResponse.ParsedToolCall(
-                    id: UUID().uuidString,
-                    name: "cancel_task",
-                    arguments: [
-                        "task_id": .string("task-123")
-                    ]
-                )
-            ],
-            finishReason: .toolCall,
-            usage: nil
-        ),
-        InferenceResponse(content: "canceled", finishReason: .completed)
-    ])
+    let snapshot: [[String: Any]] = [[
+        "id": "task-123",
+        "groupFolder": "test-group",
+        "status": "active",
+        "prompt": "Morning report"
+    ]]
+    let snapshotData = try JSONSerialization.data(withJSONObject: snapshot)
+    try snapshotData.write(to: ipcDir.appendingPathComponent("current_tasks.json"))
 
     let tools: [any Tool] = [
         ScheduleTaskToolWrapper(groupFolder: "test-group", chatJid: "test-chat", isMain: true),
@@ -752,16 +553,17 @@ func testStructuredScheduleAndCancelPersistIPCRequests() async throws {
         instructions: "Test",
         tools: tools,
         memory: nil,
-        inferenceProvider: provider,
+        inferenceProvider: nil,
         configurationName: "TestAgent"
     )
 
     try await TestEnvironmentLock.shared.withEnv("NANOCLAW_IPC_BASE_PATH", ipcDir.path) {
-        let scheduled = try await agent.run("Please schedule this")
-        #expect(scheduled.output == "scheduled")
+        let scheduled = try await agent.run("/schedule 08:00 Morning report")
+        #expect(scheduled.output.contains("Task scheduled successfully"))
 
-        let canceled = try await agent.run("Please cancel task-123")
-        #expect(canceled.output == "Task task-123 cancel requested")
+        let canceled = try await agent.run("/cancel task-123")
+        #expect(canceled.output.contains("Canceled task"))
+        #expect(canceled.output.contains("task-123"))
     }
 
     let taskFiles = try FileManager.default.contentsOfDirectory(at: tasksDir, includingPropertiesForKeys: nil)
@@ -776,69 +578,6 @@ func testStructuredScheduleAndCancelPersistIPCRequests() async throws {
     let taskTypes = Set(payloads.compactMap { $0["type"] as? String })
     #expect(taskTypes.contains("schedule_task"))
     #expect(taskTypes.contains("cancel_task"))
-}
-
-@Test
-func testParityTodoToolsInvokeThroughAgentRuntime() async throws {
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: tempDir) }
-
-    let provider = SequencedInferenceProvider(outputs: [
-        InferenceResponse(
-            content: nil,
-            toolCalls: [
-                InferenceResponse.ParsedToolCall(
-                    id: UUID().uuidString,
-                    name: "todo_write",
-                    arguments: [
-                        "action": .string("add"),
-                        "item": .string("Verify parity integration")
-                    ]
-                )
-            ],
-            finishReason: .toolCall,
-            usage: nil
-        ),
-        InferenceResponse(
-            content: nil,
-            toolCalls: [
-                InferenceResponse.ParsedToolCall(
-                    id: UUID().uuidString,
-                    name: "todo_read",
-                    arguments: [:]
-                )
-            ],
-            finishReason: .toolCall,
-            usage: nil
-        ),
-        InferenceResponse(content: "done", finishReason: .completed)
-    ])
-
-    let tools: [any Tool] = [
-        TodoWriteTool(),
-        TodoReadTool()
-    ]
-
-    let agent = await NanoClawAgent(
-        groupFolder: tempDir.path,
-        instructions: "Test",
-        tools: tools,
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    try await TestEnvironmentLock.shared.withEnv("NANOCLAW_BASE_PATH", tempDir.path) {
-        let result = try await agent.run("add and read todo")
-        #expect(result.output == "done")
-    }
-
-    let todoFile = tempDir.appendingPathComponent(".nanoclaw/todo.json")
-    #expect(FileManager.default.fileExists(atPath: todoFile.path))
-    let data = try Data(contentsOf: todoFile)
-    let text = String(data: data, encoding: .utf8) ?? ""
-    #expect(text.contains("Verify parity integration"))
 }
 
 @Test
@@ -891,7 +630,7 @@ func testCancelTaskWrapperReturnsNotFoundForUnknownTask() async throws {
     let tool = CancelTaskToolWrapper(groupFolder: "test-group")
     try await TestEnvironmentLock.shared.withEnv("NANOCLAW_IPC_BASE_PATH", ipcDir.path) {
         let result = try await tool.execute(arguments: ["task_id": .string("task-missing")])
-        #expect(result.stringValue == "I couldn’t find a task matching \"task-missing\". Try \"Please list my tasks\" to see exact IDs.")
+        #expect(result.stringValue == "I couldn’t find a task matching \"task-missing\". Try /tasks to see exact IDs.")
     }
 
     let taskFiles = try FileManager.default.contentsOfDirectory(at: tasksDir, includingPropertiesForKeys: nil)
@@ -980,46 +719,6 @@ func testCancelTaskWrapperReturnsAmbiguousWhenNameMatchesMultipleTasks() async t
 }
 
 @Test
-func testFinalOutputSanitizesInternalToolTranscriptLines() async throws {
-    let provider = SequencedInferenceProvider(outputs: [
-        InferenceResponse(
-            content: nil,
-            toolCalls: [
-                InferenceResponse.ParsedToolCall(
-                    id: UUID().uuidString,
-                    name: "echo",
-                    arguments: ["text": .string("noop")]
-                )
-            ],
-            finishReason: .toolCall,
-            usage: nil
-        ),
-        InferenceResponse(
-            content: """
-            Based on my search, I'll compile and send you a daily Apple report:
-            [Tool Result - send_message]: "Message queued for delivery"
-
-            **Summary of what I found:**
-            Final user-facing summary line.
-            """,
-            finishReason: .completed
-        )
-    ])
-
-    let agent = await NanoClawAgent(
-        groupFolder: "/tmp/test",
-        instructions: "Test",
-        tools: [EchoTool(recorder: ToolCallRecorder())],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result = try await agent.run("generate report")
-    #expect(result.output == "Final user-facing summary line.")
-}
-
-@Test
 func testDefaultInstructionsIncludeFreshnessAndSourceGroundingPolicy() async throws {
     let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -1034,82 +733,6 @@ func testDefaultInstructionsIncludeFreshnessAndSourceGroundingPolicy() async thr
     #expect(instructions.contains("For time-sensitive factual reports"))
     #expect(instructions.contains("Sources"))
     #expect(instructions.contains("As of"))
-}
-
-@Test
-func testMissedMorningReportPromptRunsScheduledReportPrompt() async throws {
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let ipcDir = tempDir.appendingPathComponent("ipc")
-    try FileManager.default.createDirectory(at: ipcDir, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: tempDir) }
-
-    let snapshot: [[String: Any]] = [[
-        "id": "task-1770913720773-AFDA0B",
-        "groupFolder": "telegram-direct",
-        "status": "active",
-        "prompt": "Search for the latest Apple news and product announcements. Compile a brief summary."
-    ]]
-    let snapshotData = try JSONSerialization.data(withJSONObject: snapshot)
-    try snapshotData.write(to: ipcDir.appendingPathComponent("current_tasks.json"))
-
-    let provider = SequencedInferenceProvider(outputs: [
-        InferenceResponse(content: "📱 Daily Apple Report — generated now", finishReason: .completed)
-    ])
-    let agent = await NanoClawAgent(
-        groupFolder: "telegram-direct",
-        instructions: "Test",
-        tools: [ListTasksToolWrapper(groupFolder: "telegram-direct", isMain: false)],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result: AgentResult = try await TestEnvironmentLock.shared.withEnv("NANOCLAW_IPC_BASE_PATH", ipcDir.path) {
-        try await agent.run("I didn't get my morning Apple News product report can you send it?")
-    }
-
-    #expect(result.output.contains("Daily Apple Report"))
-    #expect(result.output.contains("ran it now"))
-    #expect(result.toolCalls.count == 1)
-    #expect(result.toolCalls.first?.toolName == "list_tasks")
-    let count = await provider.getToolCallGenerateCount()
-    #expect(count == 1)
-}
-
-@Test
-func testMissedMorningReportPromptFallsBackToTaskSummaryWhenPromptMissing() async throws {
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let ipcDir = tempDir.appendingPathComponent("ipc")
-    try FileManager.default.createDirectory(at: ipcDir, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: tempDir) }
-
-    let snapshot: [[String: Any]] = [[
-        "id": "task-1770913720773-AFDA0B",
-        "groupFolder": "telegram-direct",
-        "status": "active",
-        "prompt": ""
-    ]]
-    let snapshotData = try JSONSerialization.data(withJSONObject: snapshot)
-    try snapshotData.write(to: ipcDir.appendingPathComponent("current_tasks.json"))
-
-    let provider = SequencedInferenceProvider(outputs: [])
-    let agent = await NanoClawAgent(
-        groupFolder: "telegram-direct",
-        instructions: "Test",
-        tools: [ListTasksToolWrapper(groupFolder: "telegram-direct", isMain: false)],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result: AgentResult = try await TestEnvironmentLock.shared.withEnv("NANOCLAW_IPC_BASE_PATH", ipcDir.path) {
-        try await agent.run("I didn't get my morning Apple News product report can you send it?")
-    }
-
-    #expect(result.output.contains("Your morning report task is active"))
-    #expect(result.output.contains("task-1770913720773-AFDA0B"))
-    let count = await provider.getToolCallGenerateCount()
-    #expect(count == 0)
 }
 
 @Test
@@ -1162,164 +785,4 @@ func testListTasksHighlightsPotentialDuplicates() async throws {
     #expect(text.contains("Schedule: Daily at 08:00 (Asia/Singapore)"))
     #expect(text.contains("Next run: 2026-02-17 08:00 GMT+08:00"))
     #expect(text.contains("(UTC 2026-02-17T00:00:00Z)"))
-}
-
-@Test
-func testResumeTaskWithoutIDResolvesSinglePausedTask() async throws {
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let ipcDir = tempDir.appendingPathComponent("ipc")
-    let tasksDir = ipcDir.appendingPathComponent("tasks")
-    try FileManager.default.createDirectory(at: tasksDir, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: tempDir) }
-
-    let snapshot: [[String: Any]] = [[
-        "id": "task-1",
-        "groupFolder": "telegram-direct",
-        "status": "paused",
-        "prompt": "Morning report: Apple news summary"
-    ]]
-    let snapshotData = try JSONSerialization.data(withJSONObject: snapshot)
-    try snapshotData.write(to: ipcDir.appendingPathComponent("current_tasks.json"))
-
-    let provider = SequencedInferenceProvider(outputs: [])
-    let agent = await NanoClawAgent(
-        groupFolder: "telegram-direct",
-        instructions: "Test",
-        tools: [ResumeTaskToolWrapper(groupFolder: "telegram-direct")],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result: AgentResult = try await TestEnvironmentLock.shared.withEnv("NANOCLAW_IPC_BASE_PATH", ipcDir.path) {
-        try await agent.run("Please resume task")
-    }
-
-    #expect(result.output.contains("Resumed task"))
-    #expect(result.output.contains("task-1"))
-    #expect(result.toolCalls.count == 1)
-    #expect(result.toolCalls.first?.toolName == "resume_task")
-    let count = await provider.getToolCallGenerateCount()
-    #expect(count == 0)
-}
-
-@Test
-func testResumeTaskWithoutIDRequestsDisambiguationWhenMultiplePausedTasks() async throws {
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let ipcDir = tempDir.appendingPathComponent("ipc")
-    let tasksDir = ipcDir.appendingPathComponent("tasks")
-    try FileManager.default.createDirectory(at: tasksDir, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: tempDir) }
-
-    let snapshot: [[String: Any]] = [
-        [
-            "id": "task-1",
-            "groupFolder": "telegram-direct",
-            "status": "paused",
-            "prompt": "Morning report: Apple news summary"
-        ],
-        [
-            "id": "task-2",
-            "groupFolder": "telegram-direct",
-            "status": "paused",
-            "prompt": "Evening report: Apple news summary"
-        ]
-    ]
-    let snapshotData = try JSONSerialization.data(withJSONObject: snapshot)
-    try snapshotData.write(to: ipcDir.appendingPathComponent("current_tasks.json"))
-
-    let provider = SequencedInferenceProvider(outputs: [])
-    let agent = await NanoClawAgent(
-        groupFolder: "telegram-direct",
-        instructions: "Test",
-        tools: [ResumeTaskToolWrapper(groupFolder: "telegram-direct")],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result: AgentResult = try await TestEnvironmentLock.shared.withEnv("NANOCLAW_IPC_BASE_PATH", ipcDir.path) {
-        try await agent.run("Please resume task")
-    }
-
-    #expect(result.output.contains("I found multiple tasks"))
-    #expect(result.output.contains("task-1"))
-    #expect(result.output.contains("task-2"))
-    #expect(result.toolCalls.isEmpty)
-    let count = await provider.getToolCallGenerateCount()
-    #expect(count == 0)
-}
-
-@Test
-func testResumeTaskWithoutIDReportsAlreadyActiveWhenSingleActiveTaskExists() async throws {
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let ipcDir = tempDir.appendingPathComponent("ipc")
-    try FileManager.default.createDirectory(at: ipcDir, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: tempDir) }
-
-    let snapshot: [[String: Any]] = [[
-        "id": "task-1",
-        "groupFolder": "telegram-direct",
-        "status": "active",
-        "prompt": "Morning report: Apple news summary"
-    ]]
-    let snapshotData = try JSONSerialization.data(withJSONObject: snapshot)
-    try snapshotData.write(to: ipcDir.appendingPathComponent("current_tasks.json"))
-
-    let provider = SequencedInferenceProvider(outputs: [])
-    let agent = await NanoClawAgent(
-        groupFolder: "telegram-direct",
-        instructions: "Test",
-        tools: [ResumeTaskToolWrapper(groupFolder: "telegram-direct")],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result: AgentResult = try await TestEnvironmentLock.shared.withEnv("NANOCLAW_IPC_BASE_PATH", ipcDir.path) {
-        try await agent.run("Please resume task")
-    }
-
-    #expect(result.output.contains("already **active**"))
-    #expect(result.output.contains("task-1"))
-    #expect(result.toolCalls.isEmpty)
-    let count = await provider.getToolCallGenerateCount()
-    #expect(count == 0)
-}
-
-@Test
-func testPauseTaskWithoutIDReportsAlreadyPausedWhenSinglePausedTaskExists() async throws {
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let ipcDir = tempDir.appendingPathComponent("ipc")
-    try FileManager.default.createDirectory(at: ipcDir, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: tempDir) }
-
-    let snapshot: [[String: Any]] = [[
-        "id": "task-1",
-        "groupFolder": "telegram-direct",
-        "status": "paused",
-        "prompt": "Morning report: Apple news summary"
-    ]]
-    let snapshotData = try JSONSerialization.data(withJSONObject: snapshot)
-    try snapshotData.write(to: ipcDir.appendingPathComponent("current_tasks.json"))
-
-    let provider = SequencedInferenceProvider(outputs: [])
-    let agent = await NanoClawAgent(
-        groupFolder: "telegram-direct",
-        instructions: "Test",
-        tools: [PauseTaskToolWrapper(groupFolder: "telegram-direct")],
-        memory: nil,
-        inferenceProvider: provider,
-        configurationName: "TestAgent"
-    )
-
-    let result: AgentResult = try await TestEnvironmentLock.shared.withEnv("NANOCLAW_IPC_BASE_PATH", ipcDir.path) {
-        try await agent.run("Please pause task")
-    }
-
-    #expect(result.output.contains("already **paused**"))
-    #expect(result.output.contains("task-1"))
-    #expect(result.toolCalls.isEmpty)
-    let count = await provider.getToolCallGenerateCount()
-    #expect(count == 0)
 }

@@ -82,7 +82,8 @@ func testDaemonAgentCacheRebuildsOnRequestKeyChange() async {
 
 @Test
 func testShouldInvalidateDaemonAgentCacheForMCPReloadPrompts() {
-    #expect(shouldInvalidateDaemonAgentCache(for: "Please reload mcp"))
-    #expect(shouldInvalidateDaemonAgentCache(for: "Please use mcp_reload tool"))
-    #expect(!shouldInvalidateDaemonAgentCache(for: "Please show mcp status"))
+    #expect(shouldInvalidateDaemonAgentCache(for: "/mcp-reload"))
+    #expect(shouldInvalidateDaemonAgentCache(for: "/mcp-reload /workspace/group/.mcp.json"))
+    #expect(!shouldInvalidateDaemonAgentCache(for: "/mcp-status"))
+    #expect(!shouldInvalidateDaemonAgentCache(for: "Please reload mcp"))
 }

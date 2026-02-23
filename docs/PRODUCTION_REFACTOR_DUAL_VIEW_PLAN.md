@@ -33,7 +33,7 @@ Evidence required:
 - `swift run nanoclaw-devctl rebuild-and-restart slim` pass
 - `swift run nanoclaw-hostctl status` healthy
 - scheduler diagnostics and DB evidence captured
-- Telegram smoke for `list tasks`, `list skills`, `show mcp status`, pagination `show more`
+- Telegram smoke for `/tasks`, `/skills`, `/mcp-status`, pagination `/more`
 
 Exit:
 - baseline is reproducible and green.
@@ -140,11 +140,11 @@ Context pipeline:
 
 ## Deterministic Intent Fast-Path Coverage
 
-Keep explicit deterministic path for:
-1. task operations (`list/pause/resume/cancel`)
-2. skill operations (`list/activate/deactivate/sync`)
-3. MCP operations (`status/reload`)
-4. pagination continuations (`show more`, `show more N`)
+Keep explicit deterministic path for slash commands:
+1. task operations (`/tasks`, `/schedule`, `/pause`, `/resume`, `/cancel`)
+2. skill operations (`/skills`, `/reload-skills`)
+3. MCP operations (`/mcp-status`, `/mcp-reload`, `/mcp-cli`)
+4. pagination continuations (`/more`, `/more N`)
 
 Rule:
 - deterministic intents should not enter long multi-iteration LLM loop unless fallback is explicitly required.
@@ -177,7 +177,7 @@ Rule:
 
 1. Telegram deterministic command latency/regression checks
 2. MCP human-readable rendering tests
-3. `show more` and `show more N` multi-page continuity
+3. `/more` and `/more N` multi-page continuity
 4. skill/memory context ordering + token budget clipping
 
 ### End-to-End Gates

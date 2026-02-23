@@ -4,16 +4,15 @@ import Testing
 
 @Test
 func testRequiresPreRunTaskSnapshotForTaskPrompts() {
-    #expect(NanoClawHostService.requiresPreRunTaskSnapshot(for: "list tasks"))
-    #expect(NanoClawHostService.requiresPreRunTaskSnapshot(for: "Please schedule task every day at 8"))
-    #expect(NanoClawHostService.requiresPreRunTaskSnapshot(for: "what is scheduled?"))
-    #expect(NanoClawHostService.requiresPreRunTaskSnapshot(for: "pause task abc123"))
+    #expect(NanoClawHostService.requiresPreRunTaskSnapshot(for: "/tasks"))
+    #expect(NanoClawHostService.requiresPreRunTaskSnapshot(for: "/schedule 08:30 Review inbox"))
+    #expect(NanoClawHostService.requiresPreRunTaskSnapshot(for: "/pause task-123"))
 }
 
 @Test
 func testRequiresPreRunTaskSnapshotFalseForNonTaskPrompts() {
-    #expect(!NanoClawHostService.requiresPreRunTaskSnapshot(for: "Please use the list_skills tool"))
-    #expect(!NanoClawHostService.requiresPreRunTaskSnapshot(for: "Please activate skill focus-mode"))
+    #expect(!NanoClawHostService.requiresPreRunTaskSnapshot(for: "/skills"))
+    #expect(!NanoClawHostService.requiresPreRunTaskSnapshot(for: "/mcp-status"))
     #expect(!NanoClawHostService.requiresPreRunTaskSnapshot(for: "what tools do you have?"))
 }
 

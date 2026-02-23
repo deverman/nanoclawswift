@@ -108,7 +108,7 @@ swift run nanoclaw-hostctl status
 Message your bot:
 
 ```text
-Please list tasks
+/tasks
 ```
 
 If you need logs:
@@ -168,25 +168,25 @@ Main workflows:
 In Telegram, ask the agent:
 
 ```text
-Please use list_skills
+/skills
 ```
 
 ### Activate a skill
 
 ```text
-Please activate_skill for <skill-name>
+Activate skill <skill-name>
 ```
 
 ### Deactivate a skill
 
 ```text
-Please deactivate_skill for <skill-name>
+Deactivate skill <skill-name>
 ```
 
 ### Re-sync skill discovery roots
 
 ```text
-Please run sync_skills
+/reload-skills
 ```
 
 Default skill roots include:
@@ -227,13 +227,13 @@ Runtime modes:
 From Telegram:
 
 ```text
-Please run mcp_reload
+/mcp-reload
 ```
 
 ### 3) Verify MCP status in chat
 
 ```text
-Please show mcp status
+/mcp-status
 ```
 
 ### 4) Call MCP server CLI through NanoClaw
@@ -241,13 +241,13 @@ Please show mcp status
 Use `mcp_host_cli` from chat when you want direct, token-cheap server calls:
 
 ```text
-Please use mcp_host_cli server <server-id> args <command> <arg1> <arg2>
+/mcp-cli <server-id> <command> <arg1> <arg2>
 ```
 
 Example:
 
 ```text
-Please use mcp_host_cli server myserver args list-tools
+/mcp-cli myserver list-tools
 ```
 
 ## Operational Notes

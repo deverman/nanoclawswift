@@ -36,7 +36,7 @@ let package = Package(
     dependencies: [
         // SwiftAgents pinned to fork revision for reproducible dependency resolution.
         .package(url: "https://github.com/deverman/Swarm.git", revision: "def222ee68681667a6d3b7a497180454b064e61e"),
-        
+
         // CLI argument parsing
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
 
@@ -49,9 +49,6 @@ let package = Package(
         // Swift-native SQLite toolkit
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.29.3"),
 
-        // Apple Containerization (target version 0.8.0+)
-        .package(url: "https://github.com/apple/containerization.git", from: "0.8.0"),
-
         // Telegram Bot API SDK (Swift-native polling/webhook support)
         .package(url: "https://github.com/nerzh/swift-telegram-bot.git", from: "4.3.0"),
 
@@ -62,6 +59,21 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
     ],
     targets: [
+        .target(
+            name: "NanoClawCommandKit",
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .testTarget(
+            name: "NanoClawCommandKitTests",
+            dependencies: [
+                "NanoClawCommandKit"
+            ],
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
         .target(
             name: "CronEngineKit",
             exclude: ["README.md"],
@@ -81,6 +93,7 @@ let package = Package(
         .executableTarget(
             name: "NanoClawAgent",
             dependencies: [
+                "NanoClawCommandKit",
                 .product(name: "SwiftAgents", package: "Swarm"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
@@ -134,6 +147,7 @@ let package = Package(
         .executableTarget(
             name: "NanoClawHost",
             dependencies: [
+                "NanoClawCommandKit",
                 "CronEngineKit",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),

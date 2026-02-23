@@ -211,65 +211,42 @@ func testTelegramDirectScheduleCommandRejectsInvalidInputWithUsageHint() async t
 }
 
 @Test
-func testTelegramDirectNaturalLanguageTaskCommands() async throws {
+func testTelegramDirectNaturalLanguageTaskCommandsAreNotIntercepted() async throws {
     let paths = try makeTelegramCommandTestPaths()
     defer { try? FileManager.default.removeItem(at: paths.root) }
 
     let service = try makeTelegramCommandService(paths: paths)
 
-    _ = await service.ingestInboundEvent(
-        makeInboundEvent(content: "schedule every day at 09:15 review inbox", messageID: "m1")
+    let response = await service.ingestInboundEvent(
+        makeInboundEvent(content: "what is scheduled?", messageID: "m1")
     )
 
-    let createdTasks = try fetchTaskRows(dbPath: paths.dbPath)
-    #expect(createdTasks.count == 1)
-    let taskID = try #require(createdTasks.first?.id)
-
-    _ = await service.ingestInboundEvent(makeInboundEvent(content: "what is scheduled?", messageID: "m2"))
-    _ = await service.ingestInboundEvent(makeInboundEvent(content: "List my scheduled tasks", messageID: "m2b"))
-    _ = await service.ingestInboundEvent(makeInboundEvent(content: "pause task \(taskID)", messageID: "m3"))
-    _ = await service.ingestInboundEvent(makeInboundEvent(content: "resume task \(taskID)", messageID: "m4"))
-    _ = await service.ingestInboundEvent(makeInboundEvent(content: "cancel task \(taskID)", messageID: "m5"))
-
-    let rowsAfterCancel = try fetchTaskRows(dbPath: paths.dbPath)
-    #expect(rowsAfterCancel.isEmpty)
-
-    let outbound = try await claimOutboundMessages(service)
-    let outboundText = outbound.map(\.text).joined(separator: "\n")
-    #expect(outboundText.contains("Scheduled task"))
-    #expect(outboundText.contains("Scheduled tasks"))
-    #expect(outboundText.contains("Paused task"))
-    #expect(outboundText.contains("Resumed task"))
-    #expect(outboundText.contains("Canceled task"))
+    #expect(response.accepted == true)
+    #expect(response.request_id != nil)
 }
 
 @Test
-func testTelegramDirectNaturalLanguageCancelSupportsCaseInsensitiveTaskID() async throws {
+func testTelegramDirectInterceptionBoundaryTasksVsSkills() async throws {
     let paths = try makeTelegramCommandTestPaths()
     defer { try? FileManager.default.removeItem(at: paths.root) }
 
     let service = try makeTelegramCommandService(paths: paths)
 
-    _ = await service.ingestInboundEvent(
-        makeInboundEvent(content: "schedule every day at 09:15 review inbox", messageID: "m1")
+    let tasksResponse = await service.ingestInboundEvent(
+        makeInboundEvent(content: "/tasks", messageID: "m1")
     )
+    #expect(tasksResponse.accepted == true)
+    #expect(tasksResponse.request_id == nil)
 
-    let createdTasks = try fetchTaskRows(dbPath: paths.dbPath)
-    #expect(createdTasks.count == 1)
-    let taskID = try #require(createdTasks.first?.id)
-    let lowercasedTaskID = taskID.lowercased()
-    #expect(lowercasedTaskID != taskID)
+    let tasksOutbound = try await claimOutboundMessages(service)
+    #expect(tasksOutbound.count == 1)
+    #expect(tasksOutbound[0].text.contains("No scheduled tasks"))
 
-    _ = await service.ingestInboundEvent(
-        makeInboundEvent(content: "cancel task \(lowercasedTaskID)", messageID: "m2")
+    let skillsResponse = await service.ingestInboundEvent(
+        makeInboundEvent(content: "/skills", messageID: "m2")
     )
-
-    let rowsAfterCancel = try fetchTaskRows(dbPath: paths.dbPath)
-    #expect(rowsAfterCancel.isEmpty)
-
-    let outbound = try await claimOutboundMessages(service)
-    let outboundText = outbound.map(\.text).joined(separator: "\n")
-    #expect(outboundText.contains("Canceled task"))
+    #expect(skillsResponse.accepted == true)
+    #expect(skillsResponse.request_id != nil)
 }
 
 @Test

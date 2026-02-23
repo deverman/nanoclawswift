@@ -1,6 +1,7 @@
 import Foundation
 import Logging
 import CronEngineKit
+import NanoClawCommandKit
 
 actor NanoClawHostService {
     struct IPCMessageCommand: Equatable {
@@ -755,20 +756,15 @@ actor NanoClawHostService {
     }
 
     nonisolated static func requiresPreRunTaskSnapshot(for prompt: String) -> Bool {
-        let normalized = prompt.lowercased()
-        let markers = [
-            "list tasks",
-            "list task",
-            "schedule task",
-            "pause task",
-            "resume task",
-            "cancel task",
-            "scheduled task",
-            "scheduled tasks",
-            "what is scheduled",
-            "what's scheduled"
-        ]
-        return markers.contains { normalized.contains($0) }
+        guard case .command(let command) = SlashCommandParser.parse(prompt) else {
+            return false
+        }
+        switch command {
+        case .tasks, .schedule, .pause, .resume, .cancel:
+            return true
+        default:
+            return false
+        }
     }
 
     private func janitorLoop() async {
@@ -1531,9 +1527,25 @@ Andy: Your scheduled task run failed.
             )
         }
 
-        guard let command = resolveTelegramDirectCommand(from: trimmed) else { return nil }
+        let message: String
+        let commandNameForLogs: String
+        switch SlashCommandParser.parse(trimmed) {
+        case .notCommand, .unknown:
+            return nil
+        case .invalid(let usageError):
+            guard isHostTelegramDirectCommandName(usageError.command) else {
+                return nil
+            }
+            message = "\(usageError.message)\nUsage: \(usageError.usage)"
+            commandNameForLogs = usageError.command
+        case .command(let command):
+            guard isHostTelegramDirectCommand(command) else {
+                return nil
+            }
+            message = try runTelegramDirectCommand(command, sourceGroup: group)
+            commandNameForLogs = telegramDirectCommandName(command)
+        }
 
-        let message = try runTelegramDirectCommand(command, sourceGroup: group)
         let chunks = splitAssistantOutboundText(
             message,
             assistantName: assistantName,
@@ -1547,7 +1559,7 @@ Andy: Your scheduled task run failed.
             )
         }
         logger.info(
-            "Handled Telegram direct command chat=\(event.chat_jid) group=\(group.folder) command=\(command)"
+            "Handled Telegram direct command chat=\(event.chat_jid) group=\(group.folder) command=\(commandNameForLogs)"
         )
         return InboundEventResponse(
             accepted: true,
@@ -1749,19 +1761,59 @@ Andy: Your scheduled task run failed.
         return false
     }
 
+    private func isHostTelegramDirectCommand(_ command: SlashCommand) -> Bool {
+        switch command {
+        case .tasks, .schedule, .pause, .resume, .cancel:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isHostTelegramDirectCommandName(_ command: String) -> Bool {
+        switch command.lowercased() {
+        case "/tasks", "/schedule", "/pause", "/resume", "/cancel":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func telegramDirectCommandName(_ command: SlashCommand) -> String {
+        switch command {
+        case .tasks:
+            return "/tasks"
+        case .schedule:
+            return "/schedule"
+        case .pause:
+            return "/pause"
+        case .resume:
+            return "/resume"
+        case .cancel:
+            return "/cancel"
+        case .skills:
+            return "/skills"
+        case .reloadSkills:
+            return "/reload-skills"
+        case .mcpStatus:
+            return "/mcp-status"
+        case .mcpReload:
+            return "/mcp-reload"
+        case .mcpCLI:
+            return "/mcp-cli"
+        case .more:
+            return "/more"
+        case .help:
+            return "/help"
+        }
+    }
+
     private func runTelegramDirectCommand(
-        _ command: String,
+        _ command: SlashCommand,
         sourceGroup: RegisteredGroupRow
     ) throws -> String {
-        let tokens = command
-            .split(whereSeparator: \.isWhitespace)
-            .map(String.init)
-        guard let verb = tokens.first?.lowercased() else {
-            return telegramCommandUsage()
-        }
-
-        switch verb {
-        case "/tasks":
+        switch command {
+        case .tasks:
             let tasks = try store.listTasks(for: sourceGroup.folder, includeAll: false)
             guard !tasks.isEmpty else {
                 return "No scheduled tasks for this chat."
@@ -1772,36 +1824,31 @@ Andy: Your scheduled task run failed.
             }
             return "Scheduled tasks (\(tasks.count)):\n" + lines.joined(separator: "\n")
 
-        case "/schedule":
-            return try scheduleTaskFromTelegramCommand(tokens: tokens, sourceGroup: sourceGroup)
+        case .schedule(let time, let prompt):
+            return try scheduleTaskFromTelegramCommand(
+                scheduleToken: time,
+                prompt: prompt,
+                sourceGroup: sourceGroup
+            )
 
-        case "/pause":
-            guard tokens.count >= 2 else {
-                return "Usage: /pause <task_id>"
-            }
-            let requestedTaskID = tokens[1]
+        case .pause(let taskID):
+            let requestedTaskID = taskID
             guard let task = try resolveTask(taskID: requestedTaskID) else {
                 return "Task not found: \(requestedTaskID)"
             }
             try store.updateTaskStatus(taskID: task.id, status: "paused")
             return "Paused task \(task.id)."
 
-        case "/resume":
-            guard tokens.count >= 2 else {
-                return "Usage: /resume <task_id>"
-            }
-            let requestedTaskID = tokens[1]
+        case .resume(let taskID):
+            let requestedTaskID = taskID
             guard let task = try resolveTask(taskID: requestedTaskID) else {
                 return "Task not found: \(requestedTaskID)"
             }
             try store.updateTaskStatus(taskID: task.id, status: "active")
             return "Resumed task \(task.id)."
 
-        case "/cancel":
-            guard tokens.count >= 2 else {
-                return "Usage: /cancel <task_id>"
-            }
-            let requestedTaskID = tokens[1]
+        case .cancel(let taskID):
+            let requestedTaskID = taskID
             guard let task = try resolveTask(taskID: requestedTaskID) else {
                 return "Task not found: \(requestedTaskID)"
             }
@@ -1809,25 +1856,16 @@ Andy: Your scheduled task run failed.
             runningScheduledTaskIDs.remove(task.id)
             return "Canceled task \(task.id)."
 
-        default:
+        case .skills, .reloadSkills, .mcpStatus, .mcpReload, .mcpCLI, .more, .help:
             return telegramCommandUsage()
         }
     }
 
     private func scheduleTaskFromTelegramCommand(
-        tokens: [String],
+        scheduleToken: String,
+        prompt: String,
         sourceGroup: RegisteredGroupRow
     ) throws -> String {
-        guard tokens.count >= 3 else {
-            return "Usage: /schedule <HH:MM> <prompt>"
-        }
-
-        let scheduleToken = tokens[1]
-        let prompt = tokens.dropFirst(2).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else {
-            return "Usage: /schedule <HH:MM> <prompt>"
-        }
-
         guard let cronValue = hhmmToCron(scheduleToken) else {
             return "Usage: /schedule <HH:MM> <prompt>"
         }
@@ -1852,100 +1890,6 @@ Andy: Your scheduled task run failed.
         )
         try store.createTask(row)
         return "Scheduled task \(taskID) at \(scheduleToken) daily."
-    }
-
-    private func resolveTelegramDirectCommand(from raw: String) -> String? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if trimmed.hasPrefix("/") {
-            return trimmed
-        }
-
-        let lowered = trimmed.lowercased()
-        let taskListIntents: Set<String> = [
-            "tasks",
-            "list tasks",
-            "list my tasks",
-            "show tasks",
-            "scheduled tasks",
-            "list scheduled tasks",
-            "list my scheduled tasks",
-            "show scheduled tasks",
-            "show my scheduled tasks",
-            "what is scheduled",
-            "what is scheduled?",
-            "what's scheduled",
-            "what's scheduled?"
-        ]
-        if taskListIntents.contains(lowered) {
-            return "/tasks"
-        }
-
-        if let mapped = mapTelegramTaskMutationIntent(trimmed, verb: "pause") {
-            return mapped
-        }
-        if let mapped = mapTelegramTaskMutationIntent(trimmed, verb: "resume") {
-            return mapped
-        }
-        if let mapped = mapTelegramTaskMutationIntent(trimmed, verb: "cancel") {
-            return mapped
-        }
-        if let mapped = mapTelegramScheduleIntent(trimmed) {
-            return mapped
-        }
-
-        return nil
-    }
-
-    private func mapTelegramTaskMutationIntent(_ raw: String, verb: String) -> String? {
-        let tokens = raw
-            .split(whereSeparator: \.isWhitespace)
-            .map(String.init)
-        guard let first = tokens.first?.lowercased(), first == verb else {
-            return nil
-        }
-        if tokens.count >= 3, tokens[1].lowercased() == "task" {
-            return "/\(verb) \(tokens[2])"
-        }
-        if tokens.count >= 2 {
-            return "/\(verb) \(tokens[1])"
-        }
-        return nil
-    }
-
-    private func mapTelegramScheduleIntent(_ raw: String) -> String? {
-        let lowered = raw.lowercased()
-        guard lowered.hasPrefix("schedule ") || lowered.hasPrefix("remind me ") else {
-            return nil
-        }
-
-        let tokens = raw
-            .split(whereSeparator: \.isWhitespace)
-            .map(String.init)
-        guard let timeIndex = tokens.firstIndex(where: { isHHMM($0) }) else {
-            return nil
-        }
-
-        let time = tokens[timeIndex]
-        var promptTokens = Array(tokens.suffix(from: timeIndex + 1))
-        if promptTokens.first?.lowercased() == "to" {
-            promptTokens.removeFirst()
-        }
-        let prompt = promptTokens.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else { return nil }
-        return "/schedule \(time) \(prompt)"
-    }
-
-    private func isHHMM(_ value: String) -> Bool {
-        let parts = value.split(separator: ":")
-        guard parts.count == 2,
-              let hour = Int(parts[0]),
-              let minute = Int(parts[1]),
-              (0...23).contains(hour),
-              (0...59).contains(minute) else {
-            return false
-        }
-        return true
     }
 
     private func telegramCommandUsage() -> String {

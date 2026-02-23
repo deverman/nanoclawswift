@@ -40,25 +40,24 @@ swift run nanoclaw-devctl rebuild-and-restart slim
 ```
 
 After only `.mcp.json` changes (no code change), reload MCP from chat:
-- `Please show mcp status`
-- `Please reload mcp`
-- `Please show mcp status`
+- `/mcp-status`
+- `/mcp-reload`
+- `/mcp-status`
 
 ## Tool Invocation Patterns
 
 - Bridged tool style:
-  - `Please use mcp_focusrelay_list_tasks tool`
+  - Ask normally and let the planner choose `mcp_focusrelay_list_tasks` when relevant.
 - Host CLI style (token-cheap for large lists):
-  - `Please use mcp_host_cli server focusrelay args list-tasks --inbox-only true --limit 10`
+  - `/mcp-cli focusrelay list-tasks --inbox-only true --limit 10`
 
 ## Pagination UX
 
 When MCP/CLI output includes `nextCursor`, agent output includes a continuation hint.
 
 Continuation commands:
-- `show more` (reuse previous page size)
-- `show more 5` (override page size to 5)
-- `next page` / `continue` (aliases)
+- `/more` (reuse previous page size)
+- `/more 5` (override page size to 5)
 
 Notes:
 - If upstream cursor is stale, response will say no additional items were returned.
@@ -66,7 +65,7 @@ Notes:
 
 ## Troubleshooting
 
-1. `Please show mcp status` reports `Config found: no`:
+1. `/mcp-status` reports `Config found: no`:
 - Ensure `.mcp.json` exists in group workspace or `NANOCLAW_MCP_CONFIG_PATH` is set.
 
 2. MCP reload succeeds but new tools do not appear immediately:

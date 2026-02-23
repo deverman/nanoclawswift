@@ -45,8 +45,8 @@ swift run nanoclaw-hostctl status
 
 From Telegram DM to your bot:
 
-- `Please list tasks`
-- `Please use the list_skills tool`
+- `/tasks`
+- `/skills`
 
 You should receive a response within seconds.
 

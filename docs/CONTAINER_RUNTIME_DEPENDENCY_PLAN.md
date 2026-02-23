@@ -68,7 +68,7 @@ Deliverables:
 4. Run runtime validation:
    - `swift run nanoclaw-devctl rebuild-and-restart slim`
    - `swift run nanoclaw-hostctl status`
-   - Telegram smoke (`list tasks`, `list skills`, `show mcp status`)
+  - Telegram smoke (`/tasks`, `/skills`, `/mcp-status`)
 
 Exit criteria:
 - All tests/builds pass.
@@ -127,9 +127,9 @@ Decision gate:
 
 1. `nanoclaw-devctl rebuild-and-restart slim` completes cleanly.
 2. Telegram commands respond with no regression:
-   - `Please list tasks`
-   - `Please list skills`
-   - `Please show mcp status`
+   - `/tasks`
+   - `/skills`
+   - `/mcp-status`
 3. Scheduled task loop still advances `next_run`.
 
 ## Risks and Mitigations

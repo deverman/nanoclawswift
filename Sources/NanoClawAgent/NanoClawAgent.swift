@@ -1,5 +1,6 @@
 import SwiftAgents
 import Foundation
+import NanoClawCommandKit
 
 // MARK: - NanoClawAgent
 
@@ -291,108 +292,257 @@ public actor NanoClawAgent: Agent {
     // MARK: - Agent Protocol Methods
 
     nonisolated public static func executionRoute(for input: String) -> ExecutionRoute {
-        let normalized = input.lowercased()
-            .replacingOccurrences(of: "’", with: "'")
-        let markers = [
-            "first",
-            "then",
-            "finally",
-            "step by step",
-            "step-by-step",
-            "multi-step",
-            "plan",
-            "compare",
-            "and then",
-            "didn't get",
-            "did not get",
-            "didnt get",
-            "missed",
-            "resend",
-            "morning report",
-            "send it"
-        ]
-        let signalCount = markers.reduce(into: 0) { partial, marker in
-            if normalized.contains(marker) {
-                partial += 1
-            }
+        _ = input
+        return .planAndExecute
+    }
+
+    nonisolated private static func slashCommandHelpText() -> String {
+        """
+        Supported commands:
+        /tasks
+        /schedule <HH:MM> <prompt...>
+        /pause <task_id>
+        /resume <task_id>
+        /cancel <task_id>
+        /skills
+        /reload-skills
+        /mcp-status
+        /mcp-reload [config_path]
+        /mcp-cli <server_id> [args...]
+        /more [n]
+        /help
+        """
+    }
+
+    nonisolated private static func slashCommandName(_ command: SlashCommand) -> String {
+        switch command {
+        case .tasks:
+            return "/tasks"
+        case .schedule:
+            return "/schedule"
+        case .pause:
+            return "/pause"
+        case .resume:
+            return "/resume"
+        case .cancel:
+            return "/cancel"
+        case .skills:
+            return "/skills"
+        case .reloadSkills:
+            return "/reload-skills"
+        case .mcpStatus:
+            return "/mcp-status"
+        case .mcpReload:
+            return "/mcp-reload"
+        case .mcpCLI:
+            return "/mcp-cli"
+        case .more:
+            return "/more"
+        case .help:
+            return "/help"
         }
-        return signalCount >= 2 ? .planAndExecute : .toolCalling
     }
 
-    nonisolated static func isMissedMorningReportPrompt(_ input: String) -> Bool {
-        let normalized = input.lowercased().replacingOccurrences(of: "’", with: "'")
-        let hasMissedSignal = normalized.contains("didn't get")
-            || normalized.contains("did not get")
-            || normalized.contains("didnt get")
-            || normalized.contains("missed")
-        let hasReportSignal = normalized.contains("morning") && normalized.contains("report")
-        let hasSendSignal = normalized.contains("send it")
-            || normalized.contains("can you send")
-            || normalized.contains("send now")
-        return hasMissedSignal && hasReportSignal && hasSendSignal
-    }
-
-    nonisolated private static func explicitTaskActionWithoutID(
+    private func deterministicSlashCommandResponse(
         for input: String,
         availableToolNames: Set<String>
-    ) -> TaskActionVerb? {
-        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
-        let checks: [(TaskActionVerb, String)] = [
-            (.resume, #"^\s*(?:please\s+)?resume\s+task\s*[.!?]?\s*$"#),
-            (.pause, #"^\s*(?:please\s+)?pause\s+task\s*[.!?]?\s*$"#),
-            (.cancel, #"^\s*(?:please\s+)?cancel\s+task\s*[.!?]?\s*$"#)
-        ]
-        for (action, pattern) in checks {
-            let toolName = "\(action.rawValue)_task"
-            guard availableToolNames.contains(toolName) else { continue }
-            if containsMatch(in: text, pattern: pattern) {
-                return action
+    ) async throws -> AgentResult? {
+        switch SlashCommandParser.parse(input) {
+        case .notCommand:
+            return nil
+        case .unknown(let name):
+            return AgentResult(
+                output: "Unknown command: \(name)\n\n\(Self.slashCommandHelpText())",
+                iterationCount: 1,
+                metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
+            )
+        case .invalid(let usageError):
+            return AgentResult(
+                output: "\(usageError.message)\nUsage: \(usageError.usage)\n\n\(Self.slashCommandHelpText())",
+                iterationCount: 1,
+                metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
+            )
+        case .command(let command):
+            if case .help = command {
+                return AgentResult(
+                    output: Self.slashCommandHelpText(),
+                    iterationCount: 1,
+                    metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
+                )
             }
+
+            if case .more(let limitOverride) = command {
+                guard availableToolNames.contains("mcp_host_cli") else {
+                    return AgentResult(
+                        output: "Command /more is unavailable because mcp_host_cli is not loaded.",
+                        iterationCount: 1,
+                        metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
+                    )
+                }
+                guard let explicit = paginationContinuationInvocation(
+                    limitOverride: limitOverride,
+                    availableToolNames: availableToolNames
+                ) else {
+                    let message = lastMCPHostCLIPaginationExhaustedNotice
+                        ?? "No paginated MCP result is active yet. Run a paginated MCP command first, then use /more."
+                    return AgentResult(
+                        output: message,
+                        iterationCount: 1,
+                        metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
+                    )
+                }
+                return try await executeExplicitToolInvocation(explicit)
+            }
+
+            let explicit: ExplicitToolInvocation?
+            switch command {
+            case .tasks:
+                explicit = availableToolNames.contains("list_tasks")
+                    ? ExplicitToolInvocation(toolName: "list_tasks", arguments: [:])
+                    : nil
+            case .schedule(let time, let prompt):
+                explicit = availableToolNames.contains("schedule_task")
+                    ? ExplicitToolInvocation(
+                        toolName: "schedule_task",
+                        arguments: [
+                            "prompt": .string(prompt),
+                            "schedule_type": .string("recurring"),
+                            "time": .string(time)
+                        ]
+                    )
+                    : nil
+            case .pause(let taskID):
+                explicit = availableToolNames.contains("pause_task")
+                    ? ExplicitToolInvocation(toolName: "pause_task", arguments: ["task_id": .string(taskID)])
+                    : nil
+            case .resume(let taskID):
+                explicit = availableToolNames.contains("resume_task")
+                    ? ExplicitToolInvocation(toolName: "resume_task", arguments: ["task_id": .string(taskID)])
+                    : nil
+            case .cancel(let taskID):
+                explicit = availableToolNames.contains("cancel_task")
+                    ? ExplicitToolInvocation(toolName: "cancel_task", arguments: ["task_id": .string(taskID)])
+                    : nil
+            case .skills:
+                explicit = availableToolNames.contains("list_skills")
+                    ? ExplicitToolInvocation(toolName: "list_skills", arguments: [:])
+                    : nil
+            case .reloadSkills:
+                explicit = availableToolNames.contains("sync_skills")
+                    ? ExplicitToolInvocation(toolName: "sync_skills", arguments: [:])
+                    : nil
+            case .mcpStatus:
+                explicit = availableToolNames.contains("mcp_status")
+                    ? ExplicitToolInvocation(toolName: "mcp_status", arguments: [:])
+                    : nil
+            case .mcpReload(let configPath):
+                var arguments: [String: SendableValue] = [:]
+                if let configPath, !configPath.isEmpty {
+                    arguments["config_path"] = .string(configPath)
+                }
+                explicit = availableToolNames.contains("mcp_reload")
+                    ? ExplicitToolInvocation(toolName: "mcp_reload", arguments: arguments)
+                    : nil
+            case .mcpCLI(let serverID, let args):
+                var arguments: [String: SendableValue] = ["server_id": .string(serverID)]
+                if !args.isEmpty {
+                    arguments["args"] = .array(args.map { .string($0) })
+                }
+                explicit = availableToolNames.contains("mcp_host_cli")
+                    ? ExplicitToolInvocation(toolName: "mcp_host_cli", arguments: arguments)
+                    : nil
+            case .more, .help:
+                explicit = nil
+            }
+
+            guard let explicit else {
+                return AgentResult(
+                    output: "Command \(Self.slashCommandName(command)) is unavailable in this runtime.",
+                    iterationCount: 1,
+                    metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
+                )
+            }
+            return try await executeExplicitToolInvocation(explicit)
         }
-        return nil
     }
 
-    nonisolated static func summarizeMorningReportTaskState(from listTasksOutput: String) -> String {
-        let trimmed = listTasksOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed == "No scheduled tasks" {
-            return "I couldn’t find a scheduled morning report task. If you want, I can set one up now."
+    private func executeExplicitToolInvocation(_ explicit: ExplicitToolInvocation) async throws -> AgentResult {
+        guard let tool = tools.first(where: { $0.name == explicit.toolName }) else {
+            return AgentResult(
+                output: "Tool unavailable: \(explicit.toolName)",
+                iterationCount: 1,
+                metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
+            )
         }
 
-        let lines = trimmed.split(separator: "\n").map(String.init)
-        if let idIndex = lines.firstIndex(where: { $0.lowercased().contains("task id:") }) {
-            let idLine = lines[idIndex]
-            let statusLine = lines[idIndex...]
-                .first(where: { $0.lowercased().contains("status:") }) ?? "Status: Unknown"
-            let selected = "\(idLine)\n\(statusLine)"
-            let lowerStatus = statusLine.lowercased()
-            if lowerStatus.contains("active") {
-                return "Your morning report task is active:\n\(selected)\nIf you want today’s report right now, say: \"Send my morning Apple report now.\""
+        let callStart = ContinuousClock.now
+        let toolCall = ToolCall(toolName: explicit.toolName, arguments: explicit.arguments)
+        do {
+            let output = try await tool.execute(arguments: explicit.arguments)
+            let duration = ContinuousClock.now - callStart
+            var rawOutput = output.stringValue ?? output.description
+            var explicitDuration = duration
+            var explicitToolCalls: [ToolCall] = [toolCall]
+            var explicitToolResults: [ToolResult] = [
+                .success(callId: toolCall.id, output: output, duration: duration)
+            ]
+            var recoveredCursorPagination = false
+
+            if let recovery = try await recoverMCPPaginationOutputIfNeeded(
+                toolName: explicit.toolName,
+                tool: tool,
+                arguments: explicit.arguments,
+                rawOutput: rawOutput
+            ) {
+                rawOutput = recovery.rawOutput
+                explicitDuration += recovery.duration
+                explicitToolCalls.append(recovery.toolCall)
+                explicitToolResults.append(recovery.toolResult)
+                recoveredCursorPagination = true
             }
-            if lowerStatus.contains("paused") {
-                return "Your morning report task is paused:\n\(selected)\nSay: \"Please resume task <task-id>\" and I can also send one now."
+
+            await updateMCPPaginationState(
+                toolName: explicit.toolName,
+                arguments: explicit.arguments,
+                rawOutput: rawOutput
+            )
+            let renderedOutput = Self.renderExplicitToolOutput(toolName: explicit.toolName, rawOutput: rawOutput)
+            let hintedOutput = Self.appendPaginationHintIfNeeded(
+                toolName: explicit.toolName,
+                rawOutput: rawOutput,
+                renderedOutput: renderedOutput
+            )
+            let userFacingOutput = Self.overrideTerminalPaginationOutputIfNeeded(
+                toolName: explicit.toolName,
+                arguments: explicit.arguments,
+                rawOutput: rawOutput,
+                renderedOutput: hintedOutput
+            )
+            var metadata: [String: SendableValue] = ["nanoclaw.explicit_tool_mode": .bool(true)]
+            if recoveredCursorPagination {
+                metadata["nanoclaw.mcp_pagination_recovered"] = .bool(true)
             }
-            return "Here’s the closest scheduled report task I found:\n\(selected)"
+            return AgentResult(
+                output: userFacingOutput,
+                toolCalls: explicitToolCalls,
+                toolResults: explicitToolResults,
+                iterationCount: 1,
+                duration: explicitDuration,
+                metadata: metadata
+            )
+        } catch {
+            await clearMCPPaginationStateIfNeeded(for: explicit.toolName)
+            let duration = ContinuousClock.now - callStart
+            let message = (error as? AgentError)?.localizedDescription ?? error.localizedDescription
+            return AgentResult(
+                output: message,
+                toolCalls: [toolCall],
+                toolResults: [.failure(callId: toolCall.id, error: message, duration: duration)],
+                iterationCount: 1,
+                duration: duration,
+                metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
+            )
         }
-
-        let candidate = lines.first { line in
-            let lower = line.lowercased()
-            return lower.contains("morning") || lower.contains("apple") || lower.contains("report")
-        } ?? lines.first
-
-        guard let selected = candidate else {
-            return "I couldn’t find a scheduled morning report task. If you want, I can set one up now."
-        }
-
-        if selected.lowercased().contains("[active]") {
-            return "Your morning report task is active:\n\(selected)\nIf you want today’s report right now, say: \"Send my morning Apple report now.\""
-        }
-
-        if selected.lowercased().contains("[paused]") {
-            return "Your morning report task is paused:\n\(selected)\nSay: \"Please resume task <task-id>\" and I can also send one now."
-        }
-
-        return "Here’s the closest scheduled report task I found:\n\(selected)"
     }
 
     public func run(_ input: String, session: (any Session)?, hooks: (any RunHooks)?) async throws -> AgentResult {
@@ -419,38 +569,14 @@ public actor NanoClawAgent: Agent {
         let traceName = "nanoclaw-agent-run"
         let traceGroupId: String? = if let session { session.sessionId } else { nil }
 
-        if let deterministic = try await deterministicMissedMorningReportResponse(
-            for: input,
-            session: session,
-            hooks: hooks
-        ) {
-            let metrics = await tracker.finish()
-            return Self.withMetrics(
-                result: deterministic,
-                metrics: metrics,
-                groupFolder: groupFolder,
-                providerRoute: providerRoute,
-                pseudoToolRejected: false,
-                executionRoute: .toolCalling,
-                attemptCount: 1,
-                retryPolicy: Self.retryPolicy(for: .toolCalling),
-                loopBudget: Self.loopBudgetPolicy(
-                    for: .toolCalling,
-                    timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
-                    isScheduledTask: isScheduledTaskRun
-                ),
-                extraMetadata: runSkillMetadata
-            )
-        }
-
         let availableToolNames = Set(tools.map(\.name))
-        if let deterministicAction = try await deterministicTaskActionWithoutIDResponse(
+        if let deterministicSlash = try await deterministicSlashCommandResponse(
             for: input,
             availableToolNames: availableToolNames
         ) {
             let metrics = await tracker.finish()
             return Self.withMetrics(
-                result: deterministicAction,
+                result: deterministicSlash,
                 metrics: metrics,
                 groupFolder: groupFolder,
                 providerRoute: providerRoute,
@@ -465,143 +591,6 @@ public actor NanoClawAgent: Agent {
                 ),
                 extraMetadata: runSkillMetadata
             )
-        }
-
-        if Self.isPaginationContinuationPrompt(input),
-           availableToolNames.contains("mcp_host_cli"),
-           lastMCPHostCLIPagination == nil {
-            let message = lastMCPHostCLIPaginationExhaustedNotice
-                ?? "No paginated MCP result is active yet. Run a paginated MCP command first, then say \"show more\"."
-            let metrics = await tracker.finish()
-            return Self.withMetrics(
-                result: AgentResult(
-                    output: message,
-                    iterationCount: 1,
-                    metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
-                ),
-                metrics: metrics,
-                groupFolder: groupFolder,
-                providerRoute: providerRoute,
-                pseudoToolRejected: false,
-                executionRoute: .toolCalling,
-                attemptCount: 1,
-                retryPolicy: Self.retryPolicy(for: .toolCalling),
-                loopBudget: Self.loopBudgetPolicy(
-                    for: .toolCalling,
-                    timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
-                    isScheduledTask: isScheduledTaskRun
-                ),
-                extraMetadata: runSkillMetadata
-            )
-        }
-
-        if let explicit = paginationContinuationInvocation(
-            for: input,
-            availableToolNames: availableToolNames
-        ) ?? Self.explicitToolInvocation(for: input, availableToolNames: availableToolNames),
-           let tool = tools.first(where: { $0.name == explicit.toolName }) {
-            let callStart = ContinuousClock.now
-            let toolCall = ToolCall(toolName: explicit.toolName, arguments: explicit.arguments)
-            do {
-                let output = try await tool.execute(arguments: explicit.arguments)
-                let duration = ContinuousClock.now - callStart
-                var rawOutput = output.stringValue ?? output.description
-                var explicitDuration = duration
-                var explicitToolCalls: [ToolCall] = [toolCall]
-                var explicitToolResults: [ToolResult] = [
-                    .success(callId: toolCall.id, output: output, duration: duration)
-                ]
-                var recoveredCursorPagination = false
-
-                if let recovery = try await recoverMCPPaginationOutputIfNeeded(
-                    toolName: explicit.toolName,
-                    tool: tool,
-                    arguments: explicit.arguments,
-                    rawOutput: rawOutput
-                ) {
-                    rawOutput = recovery.rawOutput
-                    explicitDuration += recovery.duration
-                    explicitToolCalls.append(recovery.toolCall)
-                    explicitToolResults.append(recovery.toolResult)
-                    recoveredCursorPagination = true
-                }
-
-                await updateMCPPaginationState(
-                    toolName: explicit.toolName,
-                    arguments: explicit.arguments,
-                    rawOutput: rawOutput
-                )
-                let renderedOutput = Self.renderExplicitToolOutput(toolName: explicit.toolName, rawOutput: rawOutput)
-                let hintedOutput = Self.appendPaginationHintIfNeeded(
-                    toolName: explicit.toolName,
-                    rawOutput: rawOutput,
-                    renderedOutput: renderedOutput
-                )
-                let userFacingOutput = Self.overrideTerminalPaginationOutputIfNeeded(
-                    toolName: explicit.toolName,
-                    arguments: explicit.arguments,
-                    rawOutput: rawOutput,
-                    renderedOutput: hintedOutput
-                )
-                var metadata: [String: SendableValue] = ["nanoclaw.explicit_tool_mode": .bool(true)]
-                if recoveredCursorPagination {
-                    metadata["nanoclaw.mcp_pagination_recovered"] = .bool(true)
-                }
-                let directResult = AgentResult(
-                    output: userFacingOutput,
-                    toolCalls: explicitToolCalls,
-                    toolResults: explicitToolResults,
-                    iterationCount: 1,
-                    duration: explicitDuration,
-                    metadata: metadata
-                )
-                let metrics = await tracker.finish()
-                return Self.withMetrics(
-                    result: directResult,
-                    metrics: metrics,
-                    groupFolder: groupFolder,
-                    providerRoute: providerRoute,
-                    pseudoToolRejected: false,
-                    executionRoute: .toolCalling,
-                    attemptCount: 1,
-                    retryPolicy: Self.retryPolicy(for: .toolCalling),
-                    loopBudget: Self.loopBudgetPolicy(
-                        for: .toolCalling,
-                        timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
-                        isScheduledTask: isScheduledTaskRun
-                    ),
-                    extraMetadata: runSkillMetadata
-                )
-            } catch {
-                await clearMCPPaginationStateIfNeeded(for: explicit.toolName)
-                let duration = ContinuousClock.now - callStart
-                let message = (error as? AgentError)?.localizedDescription ?? error.localizedDescription
-                let directResult = AgentResult(
-                    output: message,
-                    toolCalls: [toolCall],
-                    toolResults: [.failure(callId: toolCall.id, error: message, duration: duration)],
-                    iterationCount: 1,
-                    duration: duration,
-                    metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
-                )
-                let metrics = await tracker.finish()
-                return Self.withMetrics(
-                    result: directResult,
-                    metrics: metrics,
-                    groupFolder: groupFolder,
-                    providerRoute: providerRoute,
-                    pseudoToolRejected: false,
-                    executionRoute: .toolCalling,
-                    attemptCount: 1,
-                    retryPolicy: Self.retryPolicy(for: .toolCalling),
-                    loopBudget: Self.loopBudgetPolicy(
-                        for: .toolCalling,
-                        timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
-                        isScheduledTask: isScheduledTaskRun
-                    ),
-                    extraMetadata: runSkillMetadata
-                )
-            }
         }
 
         let route = Self.executionRoute(for: input)
@@ -763,17 +752,16 @@ public actor NanoClawAgent: Agent {
     }
 
     private func paginationContinuationInvocation(
-        for input: String,
+        limitOverride: Int?,
         availableToolNames: Set<String>
     ) -> ExplicitToolInvocation? {
         guard availableToolNames.contains("mcp_host_cli"),
-              Self.isPaginationContinuationPrompt(input),
               let pagination = lastMCPHostCLIPagination else {
             return nil
         }
 
         var args = pagination.baseArgs
-        if let overrideLimit = Self.paginationContinuationLimitOverride(input) {
+        if let overrideLimit = limitOverride {
             args = Self.replacingOrAppendingFlag(
                 named: "--limit",
                 value: String(overrideLimit),
@@ -906,216 +894,6 @@ public actor NanoClawAgent: Agent {
             toolResult: .success(callId: fallbackCall.id, output: fallbackOutput, duration: fallbackDuration),
             duration: fallbackDuration
         )
-    }
-
-    private func deterministicMissedMorningReportResponse(
-        for input: String,
-        session: (any Session)?,
-        hooks: (any RunHooks)?
-    ) async throws -> AgentResult? {
-        guard Self.isMissedMorningReportPrompt(input),
-              let listTasksTool = tools.first(where: { $0.name == "list_tasks" }) else {
-            return nil
-        }
-
-        let start = ContinuousClock.now
-        let toolCall = ToolCall(toolName: "list_tasks", arguments: [:])
-        let output = try await listTasksTool.execute(arguments: [:])
-        let duration = ContinuousClock.now - start
-        let listText = output.stringValue ?? output.description
-
-        if let task = morningReportTaskCandidate(),
-           !task.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let scheduledResult = try await run(task.prompt, session: session, hooks: hooks)
-            let statusNote: String
-            if task.status.lowercased() == "paused" {
-                statusNote = "I found your paused morning report task (\(task.id)) and ran it once now without changing its schedule status."
-            } else {
-                statusNote = "I found your morning report task (\(task.id)) and ran it now."
-            }
-
-            let mergedToolCalls = [toolCall] + scheduledResult.toolCalls
-            let mergedToolResults = [ToolResult.success(callId: toolCall.id, output: output, duration: duration)] + scheduledResult.toolResults
-            var mergedMetadata = scheduledResult.metadata
-            mergedMetadata["nanoclaw.explicit_tool_mode"] = .bool(true)
-            mergedMetadata["nanoclaw.missed_report_fast_path"] = .bool(true)
-            mergedMetadata["nanoclaw.missed_report_task_id"] = .string(task.id)
-
-            return AgentResult(
-                output: "\(statusNote)\n\n\(scheduledResult.output)",
-                toolCalls: mergedToolCalls,
-                toolResults: mergedToolResults,
-                iterationCount: max(1, scheduledResult.iterationCount + 1),
-                duration: duration + scheduledResult.duration,
-                metadata: mergedMetadata
-            )
-        }
-
-        let summary = Self.summarizeMorningReportTaskState(from: listText)
-
-        return AgentResult(
-            output: summary,
-            toolCalls: [toolCall],
-            toolResults: [.success(callId: toolCall.id, output: output, duration: duration)],
-            iterationCount: 1,
-            duration: duration,
-            metadata: ["nanoclaw.explicit_tool_mode": .bool(true), "nanoclaw.missed_report_fast_path": .bool(true)]
-        )
-    }
-
-    private func deterministicTaskActionWithoutIDResponse(
-        for input: String,
-        availableToolNames: Set<String>
-    ) async throws -> AgentResult? {
-        guard let action = Self.explicitTaskActionWithoutID(for: input, availableToolNames: availableToolNames) else {
-            return nil
-        }
-
-        let toolName = "\(action.rawValue)_task"
-        guard let tool = tools.first(where: { $0.name == toolName }) else {
-            return nil
-        }
-
-        let allTasks = loadSnapshotTasks()
-            .filter { $0.groupFolder == groupFolder }
-            .filter { task in
-                let status = task.status.lowercased()
-                return status == "active" || status == "paused"
-            }
-
-        let candidates = allTasks.filter { task in
-            switch action {
-            case .resume:
-                return task.status.lowercased() == "paused"
-            case .pause:
-                return task.status.lowercased() == "active"
-            case .cancel:
-                return true
-            }
-        }
-
-        let start = ContinuousClock.now
-
-        guard !candidates.isEmpty else {
-            let duration = ContinuousClock.now - start
-            let oppositeCandidates = allTasks.filter { task in
-                switch action {
-                case .resume:
-                    return task.status.lowercased() == "active"
-                case .pause:
-                    return task.status.lowercased() == "paused"
-                case .cancel:
-                    return false
-                }
-            }
-
-            if oppositeCandidates.count == 1, let onlyTask = oppositeCandidates.first {
-                let desiredState = action == .resume ? "active" : "paused"
-                return AgentResult(
-                    output: taskAlreadyInStateMessage(desiredState: desiredState, task: onlyTask),
-                    iterationCount: 1,
-                    duration: duration,
-                    metadata: ["nanoclaw.explicit_tool_mode": .bool(true), "nanoclaw.task_action_without_id": .bool(true)]
-                )
-            }
-
-            let qualifier: String
-            switch action {
-            case .resume:
-                qualifier = "paused"
-            case .pause:
-                qualifier = "active"
-            case .cancel:
-                qualifier = "scheduled"
-            }
-            return AgentResult(
-                output: "I couldn’t find any \(qualifier) tasks to \(action.rawValue). Try \"Please list my tasks\" first.",
-                iterationCount: 1,
-                duration: duration,
-                metadata: ["nanoclaw.explicit_tool_mode": .bool(true), "nanoclaw.task_action_without_id": .bool(true)]
-            )
-        }
-
-        if candidates.count > 1 {
-            let sorted = candidates.sorted { $0.id < $1.id }
-            let lines = sorted.map(taskLineSummary).joined(separator: "\n- ")
-            let output = """
-I found multiple tasks to \(action.rawValue). Which one should I \(action.rawValue)?
-- \(lines)
-Reply with the exact task ID, for example: "Please \(action.rawValue) task \(sorted[0].id)".
-"""
-            let duration = ContinuousClock.now - start
-            return AgentResult(
-                output: output,
-                iterationCount: 1,
-                duration: duration,
-                metadata: ["nanoclaw.explicit_tool_mode": .bool(true), "nanoclaw.task_action_without_id": .bool(true)]
-            )
-        }
-
-        let task = candidates[0]
-        let arguments: [String: SendableValue] = ["task_id": .string(task.id)]
-        let toolCall = ToolCall(toolName: toolName, arguments: arguments)
-        do {
-            let output = try await tool.execute(arguments: arguments)
-            let duration = ContinuousClock.now - start
-            return AgentResult(
-                output: output.stringValue ?? output.description,
-                toolCalls: [toolCall],
-                toolResults: [.success(callId: toolCall.id, output: output, duration: duration)],
-                iterationCount: 1,
-                duration: duration,
-                metadata: ["nanoclaw.explicit_tool_mode": .bool(true), "nanoclaw.task_action_without_id": .bool(true)]
-            )
-        } catch {
-            let duration = ContinuousClock.now - start
-            let message = (error as? AgentError)?.localizedDescription ?? error.localizedDescription
-            return AgentResult(
-                output: message,
-                toolCalls: [toolCall],
-                toolResults: [.failure(callId: toolCall.id, error: message, duration: duration)],
-                iterationCount: 1,
-                duration: duration,
-                metadata: ["nanoclaw.explicit_tool_mode": .bool(true), "nanoclaw.task_action_without_id": .bool(true)]
-            )
-        }
-    }
-
-    private func morningReportTaskCandidate() -> SnapshotTask? {
-        let tasks = loadSnapshotTasks().filter { task in
-            task.groupFolder == groupFolder
-        }
-        guard !tasks.isEmpty else {
-            return nil
-        }
-
-        let runnable = tasks.filter { task in
-            let status = task.status.lowercased()
-            return status == "active" || status == "paused"
-        }
-        let candidates = runnable.isEmpty ? tasks : runnable
-        guard !candidates.isEmpty else {
-            return nil
-        }
-
-        func score(_ task: SnapshotTask) -> Int {
-            let prompt = task.prompt.lowercased()
-            var value = 0
-            if prompt.contains("morning") { value += 3 }
-            if prompt.contains("report") { value += 3 }
-            if prompt.contains("apple") { value += 2 }
-            if prompt.contains("news") { value += 1 }
-            return value
-        }
-
-        return candidates.max { lhs, rhs in
-            let leftScore = score(lhs)
-            let rightScore = score(rhs)
-            if leftScore == rightScore {
-                return lhs.id > rhs.id
-            }
-            return leftScore < rightScore
-        }
     }
 
     nonisolated public func stream(_ input: String, session: (any Session)?, hooks: (any RunHooks)?) -> AsyncThrowingStream<AgentEvent, Error> {
@@ -1439,473 +1217,6 @@ Reply with the exact task ID, for example: "Please \(action.rawValue) task \(sor
         }
     }
 
-    nonisolated static func explicitToolInvocation(
-        for input: String,
-        availableToolNames: Set<String>
-    ) -> ExplicitToolInvocation? {
-        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
-        let lowered = text.lowercased()
-
-        if availableToolNames.contains("focusrelay_cli"),
-           let dueTodayArgs = explicitFocusRelayDueTodayArgs(for: lowered) {
-            return ExplicitToolInvocation(
-                toolName: "focusrelay_cli",
-                arguments: [
-                    "subcommand": .string("list-tasks"),
-                    "args": .array(dueTodayArgs.map { .string($0) })
-                ]
-            )
-        }
-
-        if availableToolNames.contains("sub_agent"),
-           containsMatch(
-               in: lowered,
-               pattern: #"^\s*(?:please\s+)?(?:use|run|call)\s+(?:the\s+)?sub_agent(?:\s+tool)?\b"#
-           ) {
-            guard let prompt = extractedSubAgentPrompt(from: text), !prompt.isEmpty else {
-                // Let the normal loop handle ambiguous/missing-argument sub-agent asks.
-                return nil
-            }
-            var arguments: [String: SendableValue] = ["prompt": .string(prompt)]
-            if let context = extractedSubAgentContext(from: text), !context.isEmpty {
-                arguments["context"] = .string(context)
-            }
-            if let temperature = extractedSubAgentTemperature(from: text), !temperature.isEmpty {
-                arguments["temperature"] = .string(temperature)
-            }
-            return ExplicitToolInvocation(toolName: "sub_agent", arguments: arguments)
-        }
-
-        if availableToolNames.contains("write_memory"),
-           containsMatch(
-               in: lowered,
-               pattern: #"^\s*(?:please\s+)?(?:use|run|call)\s+(?:the\s+)?write_memory(?:\s+tool)?\b"#
-           ) {
-            var arguments: [String: SendableValue] = [:]
-            if let scope = firstCapture(in: text, pattern: #"\bscope\s+(chat|global)\b"#) {
-                arguments["scope"] = .string(scope.lowercased())
-            }
-            if let mode = firstCapture(in: text, pattern: #"\bmode\s+(append|replace)\b"#) {
-                arguments["mode"] = .string(mode.lowercased())
-            }
-            if let content = extractedWriteMemoryContent(from: text), !content.isEmpty {
-                arguments["content"] = .string(content)
-            }
-            return ExplicitToolInvocation(toolName: "write_memory", arguments: arguments)
-        }
-
-        if availableToolNames.contains("send_message"),
-           containsMatch(
-               in: lowered,
-               pattern: #"^\s*(?:please\s+)?(?:use|run|call)\s+(?:the\s+)?send_message(?:\s+tool)?\b"#
-           ) {
-            var arguments: [String: SendableValue] = [:]
-            if let message = extractedSendMessageField(from: text, field: "message"), !message.isEmpty {
-                arguments["message"] = .string(message)
-            } else if let alias = extractedSendMessageField(from: text, field: "text"), !alias.isEmpty {
-                arguments["text"] = .string(alias)
-            }
-            if let attachmentPath = extractedSendMessageField(from: text, field: "attachment_path"), !attachmentPath.isEmpty {
-                arguments["attachment_path"] = .string(attachmentPath)
-            }
-            if let caption = extractedSendMessageField(from: text, field: "caption"), !caption.isEmpty {
-                arguments["caption"] = .string(caption)
-            }
-            // If no actionable fields were provided, let the normal loop handle it.
-            guard !arguments.isEmpty else { return nil }
-            return ExplicitToolInvocation(toolName: "send_message", arguments: arguments)
-        }
-
-        if availableToolNames.contains("mcp_host_cli"),
-           let (serverID, args) = extractedMCPHostCLIInvocation(from: text) {
-            var arguments: [String: SendableValue] = [
-                "server_id": .string(serverID)
-            ]
-            if !args.isEmpty {
-                arguments["args"] = .array(args.map { .string($0) })
-            }
-            return ExplicitToolInvocation(toolName: "mcp_host_cli", arguments: arguments)
-        }
-
-        if availableToolNames.contains("mcp_reload"),
-           containsMatch(
-               in: lowered,
-               pattern: #"^\s*(?:please\s+)?(?:use|run|call)\s+(?:the\s+)?mcp_reload(?:\s+tool)?\b"#
-           ) {
-            var arguments: [String: SendableValue] = [:]
-            if let configPath = extractedMCPReloadConfigPath(from: text), !configPath.isEmpty {
-                arguments["config_path"] = .string(configPath)
-            }
-            return ExplicitToolInvocation(toolName: "mcp_reload", arguments: arguments)
-        }
-
-        if availableToolNames.contains("focusrelay_cli"),
-           let (subcommand, args) = extractedFocusRelayCLIInvocation(from: text) {
-            var arguments: [String: SendableValue] = [
-                "subcommand": .string(subcommand)
-            ]
-            if !args.isEmpty {
-                arguments["args"] = .array(args.map { .string($0) })
-            }
-            return ExplicitToolInvocation(toolName: "focusrelay_cli", arguments: arguments)
-        }
-
-        if availableToolNames.contains("read_memory"),
-           containsMatch(
-               in: lowered,
-               pattern: #"^\s*(?:please\s+)?(?:use|run|call)\s+(?:the\s+)?read_memory(?:\s+tool)?\b"#
-           ) {
-            var arguments: [String: SendableValue] = [:]
-            if let scope = firstCapture(in: text, pattern: #"\bscope\s+(chat|global)\b"#) {
-                arguments["scope"] = .string(scope.lowercased())
-            }
-            return ExplicitToolInvocation(toolName: "read_memory", arguments: arguments)
-        }
-
-        if let skill = firstCapture(
-            in: text,
-            pattern: #"^\s*(?:please\s+)?deactivate\s+skill\s+[`\"]?([a-z0-9._-]+)[`\"]?\s*[.!?]?\s*$"#
-        ), availableToolNames.contains("deactivate_skill") {
-            return ExplicitToolInvocation(
-                toolName: "deactivate_skill",
-                arguments: ["skill": .string(skill)]
-            )
-        }
-
-        if let skill = firstCapture(
-            in: text,
-            pattern: #"^\s*(?:please\s+)?activate\s+skill\s+[`\"]?([a-z0-9._-]+)[`\"]?\s*[.!?]?\s*$"#
-        ), availableToolNames.contains("activate_skill") {
-            return ExplicitToolInvocation(
-                toolName: "activate_skill",
-                arguments: ["skill": .string(skill)]
-            )
-        }
-
-        let directTaskIDPatterns: [(String, String)] = [
-            ("cancel_task", #"^\s*(?:please\s+)?cancel\s+(task-[a-z0-9._-]+)\s*[.!?]?\s*$"#),
-            ("pause_task", #"^\s*(?:please\s+)?pause\s+(task-[a-z0-9._-]+)\s*[.!?]?\s*$"#),
-            ("resume_task", #"^\s*(?:please\s+)?resume\s+(task-[a-z0-9._-]+)\s*[.!?]?\s*$"#)
-        ]
-        for (toolName, pattern) in directTaskIDPatterns {
-            if let taskID = firstCapture(in: text, pattern: pattern),
-               availableToolNames.contains(toolName) {
-                return ExplicitToolInvocation(
-                    toolName: toolName,
-                    arguments: ["task_id": .string(taskID)]
-                )
-            }
-        }
-
-        let taskIDPatterns: [(String, String)] = [
-            ("cancel_task", #"^\s*(?:please\s+)?cancel\s+task(?:\s*:\s*|\s+)[`\"]?(.+?)[`\"]?\s*[.!?]?\s*$"#),
-            ("pause_task", #"^\s*(?:please\s+)?pause\s+task(?:\s*:\s*|\s+)[`\"]?(.+?)[`\"]?\s*[.!?]?\s*$"#),
-            ("resume_task", #"^\s*(?:please\s+)?resume\s+task(?:\s*:\s*|\s+)[`\"]?(.+?)[`\"]?\s*[.!?]?\s*$"#)
-        ]
-        for (toolName, pattern) in taskIDPatterns {
-            if let taskID = firstCapture(in: text, pattern: pattern),
-               availableToolNames.contains(toolName) {
-                return ExplicitToolInvocation(
-                    toolName: toolName,
-                    arguments: ["task_id": .string(taskID)]
-                )
-            }
-        }
-
-        let naturalVerbPatterns: [(String, [String])] = [
-            ("list_tasks", [
-                #"^\s*(?:please\s+)?(?:list|show)\s+(?:my\s+)?tasks\s*[.!?]?\s*$"#,
-                #"^\s*(?:please\s+)?what\s+tasks\s+(?:do\s+you\s+have|are\s+scheduled)\s*[.!?]?\s*$"#
-            ]),
-            ("todo_read", [
-                #"^\s*(?:please\s+)?(?:show|list|read)\s+(?:my\s+)?todo(?:\s+list)?\s*[.!?]?\s*$"#,
-                #"^\s*(?:please\s+)?(?:show|list|read)\s+todos\s*[.!?]?\s*$"#
-            ]),
-            ("get_task_history", [
-                #"^\s*(?:please\s+)?(?:show|get|list|read)\s+(?:task\s+)?history\s*[.!?]?\s*$"#,
-                #"^\s*(?:please\s+)?show\s+recent\s+chat\s*[.!?]?\s*$"#
-            ]),
-            ("export_chat", [
-                #"^\s*(?:please\s+)?export\s+(?:chat(?:\s+history)?|conversation(?:\s+history)?|history)\s*[.!?]?\s*$"#
-            ]),
-            ("list_skills", [
-                #"^\s*(?:please\s+)?(?:list|show)\s+(?:my\s+)?skills\s*[.!?]?\s*$"#
-            ]),
-            ("sync_skills", [
-                #"^\s*(?:please\s+)?(?:sync|refresh|reload)\s+skills\s*[.!?]?\s*$"#
-            ]),
-            ("focusrelay_inbox_tasks", [
-                #"^\s*(?:please\s+)?(?:show|list)\s+(?:my\s+)?inbox\s+tasks\s*[.!?]?\s*$"#,
-                #"^\s*(?:please\s+)?what(?:'s| is)\s+in\s+my\s+inbox\s*[.!?]?\s*$"#,
-                #"^\s*(?:please\s+)?what\s+are\s+(?:the\s+)?tasks\s+in\s+my\s+inbox\s*[.!?]?\s*$"#,
-                #"^\s*(?:please\s+)?how\s+many\s+tasks\s+are\s+in\s+my\s+inbox\s*[.!?]?\s*$"#,
-                #"^\s*(?:please\s+)?(?:anything|what(?:'s| is))\s+in\s+my\s+omnifocus\s+inbox\s*[.!?]?\s*$"#,
-                #"^\s*(?:please\s+)?what\s+are\s+(?:the\s+)?tasks\s+in\s+my\s+omnifocus\s+inbox\s*[.!?]?\s*$"#
-            ]),
-            ("focusrelay_bridge_health", [
-                #"^\s*(?:please\s+)?(?:check|show)\s+focusrelay\s+(?:bridge\s+)?health\s*[.!?]?\s*$"#
-            ]),
-            ("mcp_status", [
-                #"^\s*(?:please\s+)?(?:show|list|get)\s+(?:the\s+)?mcp\s+status\s*[.!?]?\s*$"#,
-                #"^\s*(?:please\s+)?mcp\s+status\s*[.!?]?\s*$"#
-            ]),
-            ("mcp_reload", [
-                #"^\s*(?:please\s+)?(?:reload|refresh)\s+mcp(?:\s+tools?)?\s*[.!?]?\s*$"#,
-                #"^\s*(?:please\s+)?mcp\s+reload\s*[.!?]?\s*$"#
-            ])
-        ]
-        for (toolName, patterns) in naturalVerbPatterns where availableToolNames.contains(toolName) {
-            if patterns.contains(where: { containsMatch(in: lowered, pattern: $0) }) {
-                return ExplicitToolInvocation(
-                    toolName: toolName,
-                    arguments: [:]
-                )
-            }
-        }
-
-        let patterns = [
-            #"^\s*`([a-z0-9_-]{2,})`\s+tool\s*[.!?]?\s*$"#,
-            #"^\s*(?:please\s+)?(?:use|run|call)\s+(?:the\s+)?([a-z0-9_-]{2,})\s+tool\s*[.!?]?\s*$"#
-        ]
-
-        for pattern in patterns {
-            if let candidate = firstCapture(in: lowered, pattern: pattern),
-               availableToolNames.contains(candidate) {
-                return ExplicitToolInvocation(
-                    toolName: candidate,
-                    arguments: [:]
-                )
-            }
-        }
-
-        return nil
-    }
-
-    nonisolated private static func extractedFocusRelayCLIInvocation(
-        from text: String
-    ) -> (subcommand: String, args: [String])? {
-        let patterns = [
-            #"^\s*(?:please\s+)?(?:use|run|call)\s+(?:the\s+)?focusrelay_cli(?:\s+tool)?\s+subcommand\s+([a-z0-9_-]+)(?:\s+args\s+(.+))?\s*[.!?]?\s*$"#,
-            #"^\s*(?:please\s+)?(?:run|use|call)\s+focusrelay\s+([a-z0-9_-]+)(?:\s+(.+))?\s*[.!?]?\s*$"#
-        ]
-
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-                continue
-            }
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            guard let match = regex.firstMatch(in: text, options: [], range: range),
-                  match.numberOfRanges >= 2,
-                  let subcommandRange = Range(match.range(at: 1), in: text) else {
-                continue
-            }
-
-            let subcommand = String(text[subcommandRange])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            guard !subcommand.isEmpty else { continue }
-
-            let rawArgs: String
-            if match.numberOfRanges >= 3,
-               let argsRange = Range(match.range(at: 2), in: text) {
-                rawArgs = String(text[argsRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                rawArgs = ""
-            }
-            return (subcommand, tokenizeCLIArguments(rawArgs))
-        }
-        return nil
-    }
-
-    nonisolated private static func explicitFocusRelayDueTodayArgs(for loweredInput: String) -> [String]? {
-        guard loweredInput.contains("omnifocus"),
-              loweredInput.contains("due today") else {
-            return nil
-        }
-
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
-        let now = Date()
-        let startOfDay = calendar.startOfDay(for: now)
-        guard let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfDay) else {
-            return nil
-        }
-
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        let dueAfter = formatter.string(from: startOfDay)
-        let dueBefore = formatter.string(from: startOfTomorrow)
-
-        return [
-            "--fields", "id,name,dueDate",
-            "--completed", "false",
-            "--due-after", dueAfter,
-            "--due-before", dueBefore,
-            "--limit", "50"
-        ]
-    }
-
-    nonisolated private static func extractedMCPHostCLIInvocation(
-        from text: String
-    ) -> (serverID: String, args: [String])? {
-        let patterns = [
-            #"^\s*(?:please\s+)?(?:use|run|call)\s+(?:the\s+)?mcp_host_cli(?:\s+tool)?\s+server(?:_id)?\s+([a-z0-9._-]+)(?:\s+args\s+(.+))?\s*[.!?]?\s*$"#,
-            #"^\s*(?:please\s+)?(?:run|use|call)\s+mcp\s+host\s+cli\s+([a-z0-9._-]+)(?:\s+(.+))?\s*[.!?]?\s*$"#
-        ]
-
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-                continue
-            }
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            guard let match = regex.firstMatch(in: text, options: [], range: range),
-                  match.numberOfRanges >= 2,
-                  let serverRange = Range(match.range(at: 1), in: text) else {
-                continue
-            }
-
-            let serverID = String(text[serverRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !serverID.isEmpty else { continue }
-
-            let rawArgs: String
-            if match.numberOfRanges >= 3,
-               let argsRange = Range(match.range(at: 2), in: text) {
-                rawArgs = String(text[argsRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                rawArgs = ""
-            }
-            return (serverID, tokenizeCLIArguments(rawArgs))
-        }
-        return nil
-    }
-
-    nonisolated private static func extractedMCPReloadConfigPath(from text: String) -> String? {
-        if let quoted = firstCapture(in: text, pattern: #"\bconfig(?:_path)?\s+\"([^\"]+)\""#), !quoted.isEmpty {
-            return quoted
-        }
-        if let quoted = firstCapture(in: text, pattern: #"\bconfig(?:_path)?\s+'([^']+)'"#), !quoted.isEmpty {
-            return quoted
-        }
-        if let raw = firstCapture(in: text, pattern: #"\bconfig(?:_path)?\s+(\S+)"#), !raw.isEmpty {
-            return raw.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-        }
-        return nil
-    }
-
-    nonisolated private static func tokenizeCLIArguments(_ raw: String) -> [String] {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-
-        return trimmed
-            .split(whereSeparator: \.isWhitespace)
-            .map(String.init)
-            .map { token in
-                token.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-            }
-            .filter { !$0.isEmpty }
-    }
-
-    nonisolated private static func extractedWriteMemoryContent(from text: String) -> String? {
-        if let quoted = firstCapture(in: text, pattern: #"\bcontent\s+\"([^\"]+)\""#), !quoted.isEmpty {
-            return quoted
-        }
-        if let quoted = firstCapture(in: text, pattern: #"\bcontent\s+'([^']+)'"#), !quoted.isEmpty {
-            return quoted
-        }
-        if let trailing = firstCapture(in: text, pattern: #"\bcontent\s+(.+?)\s*[.!?]?\s*$"#) {
-            let trimmed = trailing.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        }
-        return nil
-    }
-
-    nonisolated private static func extractedSendMessageField(from text: String, field: String) -> String? {
-        let escapedField = NSRegularExpression.escapedPattern(for: field)
-        if let quoted = firstCapture(in: text, pattern: #"\b\#(escapedField)\s+\"([^\"]+)\""#), !quoted.isEmpty {
-            return quoted
-        }
-        if let quoted = firstCapture(in: text, pattern: #"\b\#(escapedField)\s+'([^']+)'"#), !quoted.isEmpty {
-            return quoted
-        }
-        if let trailing = firstCapture(in: text, pattern: #"\b\#(escapedField)\s+(.+?)\s*(?:\band\b|\s*[.!?]?\s*$)"#) {
-            let trimmed = trailing.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        }
-        return nil
-    }
-
-    nonisolated private static func extractedSubAgentPrompt(from text: String) -> String? {
-        if let quoted = firstCapture(in: text, pattern: #"\bprompt\s+\"([^\"]+)\""#), !quoted.isEmpty {
-            return quoted
-        }
-        if let quoted = firstCapture(in: text, pattern: #"\bprompt\s+'([^']+)'"#), !quoted.isEmpty {
-            return quoted
-        }
-        return nil
-    }
-
-    nonisolated private static func extractedSubAgentContext(from text: String) -> String? {
-        if let quoted = firstCapture(in: text, pattern: #"\bcontext\s+\"([^\"]+)\""#), !quoted.isEmpty {
-            return quoted
-        }
-        if let quoted = firstCapture(in: text, pattern: #"\bcontext\s+'([^']+)'"#), !quoted.isEmpty {
-            return quoted
-        }
-        return nil
-    }
-
-    nonisolated private static func extractedSubAgentTemperature(from text: String) -> String? {
-        if let raw = firstCapture(in: text, pattern: #"\btemperature\s+(-?\d+(?:\.\d+)?)\b"#), !raw.isEmpty {
-            return raw
-        }
-        return nil
-    }
-
-    nonisolated private static func firstCapture(in text: String, pattern: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-            return nil
-        }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = regex.firstMatch(in: text, options: [], range: range),
-              match.numberOfRanges >= 2,
-              let captureRange = Range(match.range(at: 1), in: text) else {
-            return nil
-        }
-        return String(text[captureRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    nonisolated private static func containsMatch(in text: String, pattern: String) -> Bool {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-            return false
-        }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.firstMatch(in: text, options: [], range: range) != nil
-    }
-
-    nonisolated private static func isPaginationContinuationPrompt(_ input: String) -> Bool {
-        let patterns = [
-            #"^\s*(?:please\s+)?show\s+more(?:\s+(?:results|items|tasks))?(?:\s+\d{1,3})?\s*[.!?]?\s*$"#,
-            #"^\s*(?:please\s+)?show\s+me\s+more(?:\s+(?:results|items|tasks))?(?:\s+\d{1,3})?\s*[.!?]?\s*$"#,
-            #"^\s*(?:please\s+)?(?:next|next\s+page)(?:\s+\d{1,3})?\s*[.!?]?\s*$"#,
-            #"^\s*(?:please\s+)?continue(?:\s+(?:results|items|tasks))?(?:\s+\d{1,3})?\s*[.!?]?\s*$"#
-        ]
-        let lowered = input.lowercased()
-        return patterns.contains { containsMatch(in: lowered, pattern: $0) }
-    }
-
-    nonisolated private static func paginationContinuationLimitOverride(_ input: String) -> Int? {
-        let lowered = input.lowercased()
-        guard let rawValue = firstCapture(
-            in: lowered,
-            pattern: #"^\s*(?:please\s+)?(?:show\s+(?:me\s+)?more|next(?:\s+page)?|continue)(?:\s+(?:results|items|tasks))?\s+(\d{1,3})\s*[.!?]?\s*$"#
-        ),
-        let parsed = Int(rawValue) else {
-            return nil
-        }
-        return max(1, min(parsed, 100))
-    }
-
     nonisolated private static func removingCursorArguments(from args: [String]) -> [String] {
         var cleaned: [String] = []
         var skipNext = false
@@ -2038,8 +1349,8 @@ Reply with the exact task ID, for example: "Please \(action.rawValue) task \(sor
             return renderedOutput
         }
         return renderedOutput
-            + "\nSay \"show more\" to load the next page (cursor \(nextCursor))."
-            + "\nYou can also say \"show more <n>\" to change page size."
+            + "\nUse /more to load the next page (cursor \(nextCursor))."
+            + "\nUse /more <n> to change page size."
     }
 
     nonisolated private static func overrideTerminalPaginationOutputIfNeeded(
@@ -2468,7 +1779,7 @@ private func ambiguousTaskReferenceMessage(
     return """
 I found multiple tasks matching "\(reference)". Which one should I \(action.rawValue)?
 - \(lines)
-Reply with the exact task ID, for example: "Please \(action.rawValue) task \(sortedMatches[0].id)".
+Reply with the exact task ID, for example: "/\(action.rawValue) \(sortedMatches[0].id)".
 """
 }
 
@@ -2481,7 +1792,7 @@ private func matchedSnapshotTask(
     case .matched(let task):
         return .matched(task)
     case .notFound:
-        return .failure("I couldn’t find a task matching \"\(taskReference)\". Try \"Please list my tasks\" to see exact IDs.")
+        return .failure("I couldn’t find a task matching \"\(taskReference)\". Try /tasks to see exact IDs.")
     case .ambiguous(let matches):
         return .failure(ambiguousTaskReferenceMessage(action: action, reference: taskReference, matches: matches))
     }
@@ -2834,7 +2145,7 @@ struct ListTasksToolWrapper: Tool {
         return """
 I found potential duplicate tasks:
 \(details.joined(separator: "\n"))
-If you'd like, say: "Please cancel task <task-id>" for the duplicate you want removed.
+If you'd like, use: "/cancel <task-id>" for the duplicate you want removed.
 """
     }
 }

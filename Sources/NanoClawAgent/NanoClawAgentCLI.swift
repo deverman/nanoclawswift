@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import Logging
+import NanoClawCommandKit
 
 @main
 struct NanoClawAgentCLI: AsyncParsableCommand {
@@ -152,20 +153,8 @@ actor DaemonAgentCache {
 }
 
 func shouldInvalidateDaemonAgentCache(for prompt: String) -> Bool {
-    let patterns = [
-        #"^\s*(?:please\s+)?(?:use|run|call)\s+(?:the\s+)?mcp_reload(?:\s+tool)?\b"#,
-        #"^\s*(?:please\s+)?(?:reload|refresh)\s+mcp(?:\s+tools?)?\s*[.!?]?\s*$"#,
-        #"^\s*(?:please\s+)?mcp\s+reload\s*[.!?]?\s*$"#
-    ]
-
-    for pattern in patterns {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-            continue
-        }
-        let range = NSRange(prompt.startIndex..<prompt.endIndex, in: prompt)
-        if regex.firstMatch(in: prompt, options: [], range: range) != nil {
-            return true
-        }
+    if case .command(.mcpReload) = SlashCommandParser.parse(prompt) {
+        return true
     }
     return false
 }
