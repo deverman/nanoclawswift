@@ -37,6 +37,12 @@ func testUnknownCommandReturnsUnknown() {
 }
 
 @Test
+func testCommandsAliasParsesAsHelp() {
+    let result = SlashCommandParser.parse("/commands")
+    #expect(result == .command(.help))
+}
+
+@Test
 func testParsesMoreWithLimit() {
     let result = SlashCommandParser.parse("/more 5")
     #expect(result == .command(.more(limit: 5)))

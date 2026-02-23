@@ -311,6 +311,7 @@ public actor NanoClawAgent: Agent {
         /mcp-cli <server_id> [args...]
         /more [n]
         /help
+        /commands (alias for /help)
         """
     }
 

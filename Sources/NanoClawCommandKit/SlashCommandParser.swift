@@ -156,7 +156,7 @@ public enum SlashCommandParser {
                 return invalid(command: commandName, message: "Page size must be an integer between 1 and 100.")
             }
             return .command(.more(limit: parsed))
-        case "/help":
+        case "/help", "/commands":
             guard args.isEmpty else {
                 return invalid(command: commandName, message: "Unexpected arguments.")
             }
@@ -202,6 +202,8 @@ public enum SlashCommandParser {
             return "/more [n]"
         case "/help":
             return "/help"
+        case "/commands":
+            return "/commands"
         default:
             return "/help"
         }
