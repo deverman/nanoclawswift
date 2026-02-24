@@ -442,7 +442,8 @@ public enum SkillsContextComposer {
                 }
             let positive = ranked.filter { $0.1 > 0 }.map(\.0)
             if positive.isEmpty {
-                selected = Array(activeSkills.sorted { $0.name < $1.name }.prefix(resolvedMaxSkills))
+                // Auto-resolve mode should only inject skills when the current prompt is relevant.
+                selected = []
                 selectedByResolver = false
             } else {
                 selected = Array(positive.prefix(resolvedMaxSkills))

@@ -473,6 +473,35 @@ private func runBuildAgentImage(mode: String, imageName: String) throws {
             _ = try DevRuntime.requireSuccess("cp", [staticBuildOutput, outputPath], cwd: repoRoot)
         } catch {
             let details = String(describing: error)
+            if isCrossArchStaticSDKMismatch(details) {
+                print("Detected cross-arch static SDK module mismatch; retrying in isolated build path...")
+                let isolatedPath = "\(FileManager.default.temporaryDirectory.path)/nanoclaw-linux-static-sdk-\(UUID().uuidString)"
+                let staticBuildOutput = try runStaticLinuxBuild(
+                    repoRoot: repoRoot,
+                    buildPath: isolatedPath,
+                    timeout: max(DevRuntime.buildTimeoutSeconds, 20 * 60)
+                )
+                _ = try DevRuntime.requireSuccess("cp", [staticBuildOutput, outputPath], cwd: repoRoot)
+                try? FileManager.default.removeItem(atPath: isolatedPath)
+                guard FileManager.default.fileExists(atPath: outputPath) else {
+                    throw DevCtlError.fileNotFound("Build artifact missing at \(outputPath)")
+                }
+                _ = try DevRuntime.requireSuccess("file", [outputPath], cwd: repoRoot)
+                print("\nStep 2: Packaging image with container/Dockerfile.slim...")
+                _ = try DevRuntime.requireSuccess(
+                    containerCLI,
+                    [
+                        "build",
+                        "-f", "\(repoRoot)/container/Dockerfile.slim",
+                        "-t", tag,
+                        "."
+                    ],
+                    cwd: repoRoot,
+                    timeout: DevRuntime.containerBuildTimeoutSeconds
+                )
+                print("\nBuild complete: \(tag)")
+                return
+            }
             guard shouldRetryStaticLinuxBuildFailure(details) else {
                 throw error
             }
@@ -544,6 +573,13 @@ func shouldRetryStaticLinuxBuildFailure(_ details: String) -> Bool {
         "unknown package",
     ]
     return transientMarkers.contains { normalized.contains($0) }
+}
+
+func isCrossArchStaticSDKMismatch(_ details: String) -> Bool {
+    let normalized = details.lowercased()
+    return normalized.contains("could not find module '_concurrency'")
+        && normalized.contains("aarch64-swift-linux-musl")
+        && normalized.contains("found: x86_64-swift-linux-musl")
 }
 
 private func runStaticLinuxBuild(repoRoot: String, buildPath: String, timeout: TimeInterval) throws -> String {

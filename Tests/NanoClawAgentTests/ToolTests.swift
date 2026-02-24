@@ -988,3 +988,49 @@ func testSkillsContextComposerSelectsActiveSkillAndAppliesBudgetTruncation() asy
         #expect(payload?.instructionBlock.contains("Packing List Generator") == true)
     }
 }
+
+@Test
+func testSkillsContextComposerSkipsIrrelevantActiveSkillWhenAutoResolveEnabled() async throws {
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let homeDir = tempDir.appendingPathComponent("home")
+    let groupRoot = tempDir.appendingPathComponent("group")
+    let claudeSkillsRoot = homeDir.appendingPathComponent(".claude/skills")
+    try FileManager.default.createDirectory(at: claudeSkillsRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: groupRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let skillDir = claudeSkillsRoot.appendingPathComponent("packing-list")
+    try FileManager.default.createDirectory(at: skillDir, withIntermediateDirectories: true)
+    try """
+    # Packing List Generator
+
+    Help users create travel packing lists.
+    """.write(
+        to: skillDir.appendingPathComponent("SKILL.md"),
+        atomically: true,
+        encoding: .utf8
+    )
+
+    try await TestEnvironmentLock.shared.withEnvs([
+        "HOME": homeDir.path,
+        "CODEX_HOME": "",
+        "NANOCLAW_BASE_PATH": groupRoot.path
+    ]) {
+        let activateTool = ActivateSkillTool()
+        _ = try await activateTool.execute(arguments: ["skill": .string("packing-list")])
+
+        let payload = SkillsContextComposer.compose(
+            for: "Run failed task task-1770913720773-AFDA0B again and show me the error",
+            tokenBudget: 400,
+            maxSkills: 3,
+            autoResolve: true,
+            environment: [
+                "HOME": homeDir.path,
+                "CODEX_HOME": "",
+                "NANOCLAW_BASE_PATH": groupRoot.path
+            ]
+        )
+
+        #expect(payload == nil)
+    }
+}

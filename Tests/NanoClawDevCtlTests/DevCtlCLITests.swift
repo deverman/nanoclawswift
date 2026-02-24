@@ -167,3 +167,16 @@ func testRetryClassifierMatchesKnownTransientBuildFailures() {
 func testRetryClassifierSkipsDeterministicCompileFailures() {
     #expect(!shouldRetryStaticLinuxBuildFailure("error: cannot find type 'FooBar' in scope"))
 }
+
+@Test
+func testCrossArchStaticSDKMismatchClassifierMatchesConcurrencyModuleError() {
+    let details = """
+    error: could not find module '_Concurrency' for target 'aarch64-swift-linux-musl'; found: x86_64-swift-linux-musl
+    """
+    #expect(isCrossArchStaticSDKMismatch(details))
+}
+
+@Test
+func testCrossArchStaticSDKMismatchClassifierRejectsUnrelatedErrors() {
+    #expect(!isCrossArchStaticSDKMismatch("error: cannot find type 'FooBar' in scope"))
+}
