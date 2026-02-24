@@ -64,6 +64,10 @@ private enum DevRuntime {
         return "container"
     }
 
+    static var preferredSwiftCLI: String {
+        preferredSwiftExecutablePath()
+    }
+
     @discardableResult
     static func run(
         _ executable: String,
@@ -224,7 +228,7 @@ extension NanoClawDevCtl {
                     restartArgs.append("--foreground")
                 }
                 print("\nStep 3: Restarting host...")
-                _ = try DevRuntime.requireSuccess("swift", restartArgs, cwd: DevRuntime.repoRoot)
+                _ = try DevRuntime.requireSuccess(DevRuntime.preferredSwiftCLI, restartArgs, cwd: DevRuntime.repoRoot)
                 print("\nRebuild + restart complete.")
             }
         }
@@ -511,6 +515,25 @@ func staticLinuxBuildPath(repoRoot: String) -> String {
     "\(repoRoot)/.build/linux-static-sdk"
 }
 
+func preferredSwiftExecutablePath(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    isExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+) -> String {
+    if let override = environment["NANOCLAW_DEVCTL_SWIFT_BIN"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+       !override.isEmpty {
+        return override
+    }
+
+    let home = environment["HOME"] ?? NSHomeDirectory()
+    let pinnedToolchainSwift = "\(home)/Library/Developer/Toolchains/swift-6.2.3-RELEASE.xctoolchain/usr/bin/swift"
+    if isExecutableFile(pinnedToolchainSwift) {
+        return pinnedToolchainSwift
+    }
+
+    return "swift"
+}
+
 func shouldRetryStaticLinuxBuildFailure(_ details: String) -> Bool {
     let normalized = details.lowercased()
     let transientMarkers = [
@@ -528,8 +551,10 @@ private func runStaticLinuxBuild(repoRoot: String, buildPath: String, timeout: T
         at: URL(fileURLWithPath: buildPath),
         withIntermediateDirectories: true
     )
+    let swiftCLI = DevRuntime.preferredSwiftCLI
+    print("Using Swift CLI: \(swiftCLI)")
     _ = try DevRuntime.requireSuccess(
-        "swift",
+        swiftCLI,
         try staticLinuxBuildArguments(buildPath: buildPath),
         cwd: repoRoot,
         timeout: timeout

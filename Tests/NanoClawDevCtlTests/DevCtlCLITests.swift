@@ -124,6 +124,39 @@ func testStaticLinuxBuildPathUsesWarmCacheLocation() {
 }
 
 @Test
+func testPreferredSwiftExecutablePathUsesExplicitOverride() {
+    let path = preferredSwiftExecutablePath(
+        environment: [
+            "NANOCLAW_DEVCTL_SWIFT_BIN": "/custom/swift",
+            "HOME": "/Users/test"
+        ],
+        isExecutableFile: { _ in false }
+    )
+    #expect(path == "/custom/swift")
+}
+
+@Test
+func testPreferredSwiftExecutablePathUsesPinnedToolchainWhenPresent() {
+    let expected = "/Users/test/Library/Developer/Toolchains/swift-6.2.3-RELEASE.xctoolchain/usr/bin/swift"
+    let path = preferredSwiftExecutablePath(
+        environment: ["HOME": "/Users/test"],
+        isExecutableFile: { candidate in
+            candidate == expected
+        }
+    )
+    #expect(path == expected)
+}
+
+@Test
+func testPreferredSwiftExecutablePathFallsBackToSwift() {
+    let path = preferredSwiftExecutablePath(
+        environment: ["HOME": "/Users/test"],
+        isExecutableFile: { _ in false }
+    )
+    #expect(path == "swift")
+}
+
+@Test
 func testRetryClassifierMatchesKnownTransientBuildFailures() {
     #expect(shouldRetryStaticLinuxBuildFailure("Command timed out after 600s: swift build ..."))
     #expect(shouldRetryStaticLinuxBuildFailure("Assertion failed: (db_), function attachDB, file SQLiteBuildDB.cpp, line 125"))
