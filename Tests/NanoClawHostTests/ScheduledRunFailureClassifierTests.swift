@@ -13,6 +13,16 @@ func scheduledRunFailureClassifierMapsProviderRateLimit() {
 }
 
 @Test
+func scheduledRunFailureClassifierMapsProviderRateLimitFromRetryAfterMessage() {
+    let cause = ScheduledRunFailureClassifier.classify(
+        status: "error",
+        detail: "Generation failed: Provider temporarily unavailable due to rate limits. Retry after 25 seconds."
+    )
+    #expect(cause == .providerRateLimit)
+    #expect(ScheduledRunFailureClassifier.isTransient(cause) == true)
+}
+
+@Test
 func scheduledRunFailureClassifierMapsProviderTimeout() {
     let cause = ScheduledRunFailureClassifier.classify(
         status: "error",
@@ -76,6 +86,7 @@ func scheduledFailureNoticeIncludesRateLimitHint() {
     )
     #expect(text.contains("task-123"))
     #expect(text.lowercased().contains("rate limit"))
+    #expect(!text.hasPrefix("Andy:"))
 }
 
 @Test

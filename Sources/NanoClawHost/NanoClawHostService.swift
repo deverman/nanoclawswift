@@ -1200,7 +1200,7 @@ Andy: I was offline earlier, so I'm running your missed scheduled task now.
             hint = "The run failed for an unknown reason. Please check scheduler diagnostics."
         }
         return """
-Andy: Your scheduled task run failed.
+Your scheduled task run failed.
 • Task ID: \(idText)
 • Cause: \(cause.rawValue)
 • Hint: \(hint)

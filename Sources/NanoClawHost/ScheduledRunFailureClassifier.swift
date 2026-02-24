@@ -17,7 +17,12 @@ enum ScheduledRunFailureClassifier {
 
     static func classify(detail: String?) -> ScheduledRunFailureCause {
         let text = (detail ?? "").lowercased()
-        if text.contains("http 429") || text.contains("rate limit exceeded") {
+        if text.contains("http 429")
+            || text.contains("rate limit exceeded")
+            || text.contains("rate limit")
+            || text.contains("rate limits")
+            || text.contains("rate_limited")
+            || text.contains("temporarily unavailable due to rate limits") {
             return .providerRateLimit
         }
         let upstreamTimeout =
