@@ -472,7 +472,7 @@ private func runBuildAgentImage(mode: String, imageName: String) throws {
             // Dockerfile.slim expects this fixed host path.
             _ = try DevRuntime.requireSuccess("cp", [staticBuildOutput, outputPath], cwd: repoRoot)
         } catch {
-            let details = String(describing: error)
+            let details = recoverableErrorDetails(error)
             if isCrossArchStaticSDKMismatch(details) {
                 print("Detected cross-arch static SDK module mismatch; retrying in isolated build path...")
                 let isolatedPath = "\(FileManager.default.temporaryDirectory.path)/nanoclaw-linux-static-sdk-\(UUID().uuidString)"
@@ -576,10 +576,25 @@ func shouldRetryStaticLinuxBuildFailure(_ details: String) -> Bool {
 }
 
 func isCrossArchStaticSDKMismatch(_ details: String) -> Bool {
-    let normalized = details.lowercased()
-    return normalized.contains("could not find module '_concurrency'")
-        && normalized.contains("aarch64-swift-linux-musl")
-        && normalized.contains("found: x86_64-swift-linux-musl")
+    let normalized = details
+        .lowercased()
+        .replacingOccurrences(of: "\\'", with: "'")
+    let hasConcurrencyModuleFailure = normalized.contains("could not find module")
+        && normalized.contains("_concurrency")
+    let hasArchMismatch = (normalized.contains("aarch64-swift-linux-musl")
+        && normalized.contains("found: x86_64-swift-linux-musl"))
+        || (normalized.contains("x86_64-swift-linux-musl")
+            && normalized.contains("found: aarch64-swift-linux-musl"))
+    return hasConcurrencyModuleFailure && hasArchMismatch
+}
+
+func recoverableErrorDetails(_ error: Error) -> String {
+    let localized = (error as NSError).localizedDescription
+    let described = String(describing: error)
+    if localized == described {
+        return localized
+    }
+    return "\(localized)\n\(described)"
 }
 
 private func runStaticLinuxBuild(repoRoot: String, buildPath: String, timeout: TimeInterval) throws -> String {
