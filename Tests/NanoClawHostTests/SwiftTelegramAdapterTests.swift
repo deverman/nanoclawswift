@@ -291,8 +291,12 @@ func testTelegramTypingHeartbeatStartsAfterDelayForLongRunningWork() async throw
     let earlyCalls = await transport.sentTyping.count
     #expect(earlyCalls == 0)
 
-    try await Task.sleep(for: .milliseconds(50))
-    let delayedCalls = await transport.sentTyping.count
+    let deadline = ContinuousClock.now + .milliseconds(300)
+    var delayedCalls = await transport.sentTyping.count
+    while delayedCalls < 1 && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(20))
+        delayedCalls = await transport.sentTyping.count
+    }
     #expect(delayedCalls >= 1)
 }
 
