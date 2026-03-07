@@ -160,6 +160,27 @@ struct ContainerResponsePayload: Codable, Sendable {
     let error: String?
     let tool_calls_count: Int?
     let duration_ms: Int?
+    let metadata: [String: String]?
+
+    init(
+        request_id: String,
+        status: String,
+        result: String?,
+        new_session_id: String?,
+        error: String?,
+        tool_calls_count: Int?,
+        duration_ms: Int?,
+        metadata: [String: String]? = nil
+    ) {
+        self.request_id = request_id
+        self.status = status
+        self.result = result
+        self.new_session_id = new_session_id
+        self.error = error
+        self.tool_calls_count = tool_calls_count
+        self.duration_ms = duration_ms
+        self.metadata = metadata
+    }
 }
 
 struct QueueJob: Sendable {

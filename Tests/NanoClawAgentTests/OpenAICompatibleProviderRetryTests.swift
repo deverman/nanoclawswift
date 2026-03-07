@@ -50,3 +50,15 @@ func testCapabilityLimitationDisclaimerDetectionIgnoresNormalResponses() {
     let text = "Here is a summary based on the tool results."
     #expect(!OpenAICompatibleProvider.containsCapabilityLimitationDisclaimer(text))
 }
+
+@Test
+func testProviderRequestDiagnosticsReportsFallbackUsageMetadata() async {
+    let diagnostics = ProviderRequestDiagnostics()
+    await diagnostics.recordFallback(reason: "behavioral_tool_failure")
+    await diagnostics.recordFallback(reason: "tool_call_error")
+
+    let metadata = await diagnostics.metadata()
+    #expect(metadata["nanoclaw.provider_fallback_used"] == .bool(true))
+    #expect(metadata["nanoclaw.provider_fallback_count"] == .int(2))
+    #expect(metadata["nanoclaw.provider_fallback_reason"] == .string("tool_call_error"))
+}

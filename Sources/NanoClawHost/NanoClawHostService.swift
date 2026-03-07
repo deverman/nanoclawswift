@@ -580,6 +580,8 @@ actor NanoClawHostService {
                 let trimmedResult = scheduledResponse.result?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let hasDirectResult = !trimmedResult.isEmpty
                 let toolCalls = scheduledResponse.tool_calls_count ?? 0
+                let providerFallbackUsed = scheduledResponse.metadata?["nanoclaw.provider_fallback_used"] ?? "false"
+                let providerFallbackReason = scheduledResponse.metadata?["nanoclaw.provider_fallback_reason"] ?? "none"
                 let shouldFallbackDirectResult =
                     scheduledResponse.status == "success"
                     && hasDirectResult
@@ -588,7 +590,7 @@ actor NanoClawHostService {
                             || toolCalls == 0
                     )
                 logger.info(
-                    "Scheduled delivery decision request=\(job.requestID) status=\(scheduledResponse.status) hasDirectResult=\(hasDirectResult) ipcOutbound=\(ipcOutcome.outboundMessagesFromIPC) toolCalls=\(toolCalls) fallback=\(shouldFallbackDirectResult)"
+                    "Scheduled delivery decision request=\(job.requestID) status=\(scheduledResponse.status) hasDirectResult=\(hasDirectResult) ipcOutbound=\(ipcOutcome.outboundMessagesFromIPC) toolCalls=\(toolCalls) fallback=\(shouldFallbackDirectResult) providerFallbackUsed=\(providerFallbackUsed) providerFallbackReason=\(providerFallbackReason)"
                 )
                 if shouldFallbackDirectResult {
                     let chunks = splitAssistantOutboundText(
@@ -614,7 +616,7 @@ actor NanoClawHostService {
                     detail: scheduledResponse.error
                 )
                 logger.info(
-                    "Completed scheduled queue job request=\(job.requestID) group=\(job.group.folder) status=\(scheduledResponse.status) cause=\(scheduledCause?.rawValue ?? "none") transient=\(ScheduledRunFailureClassifier.isTransient(scheduledCause)) totalMs=\(totalMs) queueWaitMs=\(queueWaitMs) snapshotMs=\(snapshotMs ?? -1) sessionLoadMs=\(sessionLoadMs ?? -1) containerMs=\(containerMs ?? -1) sessionPersistMs=\(sessionPersistMs ?? -1) ipcMs=\(ipcMs ?? -1) toolCalls=\(toolCallsCount ?? -1) agentDurationMs=\(agentDurationMs ?? -1)"
+                    "Completed scheduled queue job request=\(job.requestID) group=\(job.group.folder) status=\(scheduledResponse.status) cause=\(scheduledCause?.rawValue ?? "none") transient=\(ScheduledRunFailureClassifier.isTransient(scheduledCause)) totalMs=\(totalMs) queueWaitMs=\(queueWaitMs) snapshotMs=\(snapshotMs ?? -1) sessionLoadMs=\(sessionLoadMs ?? -1) containerMs=\(containerMs ?? -1) sessionPersistMs=\(sessionPersistMs ?? -1) ipcMs=\(ipcMs ?? -1) toolCalls=\(toolCallsCount ?? -1) agentDurationMs=\(agentDurationMs ?? -1) providerFallbackUsed=\(providerFallbackUsed) providerFallbackReason=\(providerFallbackReason)"
                 )
                 return
             }
@@ -692,8 +694,10 @@ actor NanoClawHostService {
 
             let totalMs = elapsedMs(since: startedAt)
             recordLatency(totalMs: totalMs, timedOut: isTimeoutLike(response.error))
+            let providerFallbackUsed = normalizedResponse.metadata?["nanoclaw.provider_fallback_used"] ?? "false"
+            let providerFallbackReason = normalizedResponse.metadata?["nanoclaw.provider_fallback_reason"] ?? "none"
             logger.info(
-                "Completed queue job request=\(job.requestID) group=\(job.group.folder) status=\(normalizedResponse.status) totalMs=\(totalMs) queueWaitMs=\(queueWaitMs) snapshotMs=\(snapshotMs ?? -1) sessionLoadMs=\(sessionLoadMs ?? -1) containerMs=\(containerMs ?? -1) sessionPersistMs=\(sessionPersistMs ?? -1) ipcMs=\(ipcMs ?? -1) outboundMs=\(outboundMs ?? -1) toolCalls=\(toolCallsCount ?? -1) agentDurationMs=\(agentDurationMs ?? -1)"
+                "Completed queue job request=\(job.requestID) group=\(job.group.folder) status=\(normalizedResponse.status) totalMs=\(totalMs) queueWaitMs=\(queueWaitMs) snapshotMs=\(snapshotMs ?? -1) sessionLoadMs=\(sessionLoadMs ?? -1) containerMs=\(containerMs ?? -1) sessionPersistMs=\(sessionPersistMs ?? -1) ipcMs=\(ipcMs ?? -1) outboundMs=\(outboundMs ?? -1) toolCalls=\(toolCallsCount ?? -1) agentDurationMs=\(agentDurationMs ?? -1) providerFallbackUsed=\(providerFallbackUsed) providerFallbackReason=\(providerFallbackReason)"
             )
         } catch {
             let totalMs = elapsedMs(since: startedAt)

@@ -1,6 +1,6 @@
 # NanoClawSwift Implementation Plan (Swift-First)
 
-Updated: 2026-03-06
+Updated: 2026-03-07
 
 ## Summary
 
@@ -318,14 +318,19 @@ This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, w
 3. Scheduled-report soak closure (`in progress`, narrowed scope to provider/network stability):
    - Apple and Swift scheduled tasks now both behave correctly at runtime
    - remaining soak blocker is general provider/network noise, not scheduler/task logic
-4. Production-readiness gate re-run and short go/no-go report:
+4. GitHub Actions reliability hardening (`new`, production blocker):
+   - observed failing GitHub Actions workflow notification for `Build Linux Binary (glibc)`
+   - treat green CI on the branch head as required before production GO
+   - next step: inspect workflow logs, fix the glibc build failure, and keep the workflow green across the latest scheduler/runtime commits
+5. Production-readiness gate re-run and short go/no-go report:
    - rerun gate checklist with current Apple + Swift scheduled-task behavior
    - verify no new regressions in next soak window
-5. Serialized runtime update flow (`done`, standard path): `swift run nanoclaw-devctl rebuild-and-restart slim`.
-6. Swift-native dev build reliability hardening (`done 2026-02-19`, but still an operational pain point):
+   - require GitHub Actions success for the release branch head
+6. Serialized runtime update flow (`done`, standard path): `swift run nanoclaw-devctl rebuild-and-restart slim`.
+7. Swift-native dev build reliability hardening (`done 2026-02-19`, but still an operational pain point):
    - runtime-critical builds still hit static SDK cross-arch and transient network/submodule fetch failures
    - keep improving reproducibility so deploy/validate loops are less fragile
-7. MCP stability hardening follow-up (`in progress`):
+8. MCP stability hardening follow-up (`in progress`):
    - host-side MCP lifecycle fix shipped on `2026-03-04`:
      - explicit `client.disconnect()` before remove/replace/shutdown in `HostMCPRuntime`
      - restart dead same-spec host MCP servers during bootstrap
@@ -334,8 +339,8 @@ This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, w
      - host relay bootstrap endpoint loads FocusRelay successfully (`loadedServerCount=1`, `loaded_tools=9`)
      - host MCP status now reports loaded `focusrelay` server after bootstrap
    - upstream SDK follow-up still needed for `Client.connect(transport:)` stream-finished loop behavior.
-8. Continue MCP usability polish (cursor UX + human-readable rendering) only when tied to observed user friction; avoid speculative over-architecture.
-9. Dependency hardening quick win (`done 2026-02-19`; keep pin for now):
+9. Continue MCP usability polish (cursor UX + human-readable rendering) only when tied to observed user friction; avoid speculative over-architecture.
+10. Dependency hardening quick win (`done 2026-02-19`; keep pin for now):
    - Root cause recap:
      - we switched the `slim` build path from containerized `swift:6.2.3` (glibc) to static Linux SDK (musl) in `nanoclaw-devctl`.
      - this surfaced a latent Conduit Linux import assumption (`os(Linux) -> import Glibc`) that previously stayed hidden in glibc-only build mode.
@@ -357,7 +362,7 @@ This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, w
      - open upstream PR to `christopherkarani/Swarm` and replace fork pin with upstream tag/revision once merged.
      - keep this note because this repo previously had musl friction and the compatibility requirement is still relevant.
 
-10. Provider throttle safety default (`done 2026-03-04`):
+11. Provider throttle safety default (`done 2026-03-04`):
    - host now backfills `NANOCLAW_PROVIDER_RPM_LIMIT` into container passthrough when unset/invalid.
    - resolution order: explicit `NANOCLAW_PROVIDER_RPM_LIMIT` (if valid) -> valid `KIMI_RPM_LIMIT` -> default `18`.
    - regression coverage added in `HostEnvironmentConfigTests`.

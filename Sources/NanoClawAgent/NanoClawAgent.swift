@@ -663,6 +663,7 @@ public actor NanoClawAgent: Agent {
     public func run(_ input: String, session: (any Session)?, hooks: (any RunHooks)?) async throws -> AgentResult {
         let tracker = PerformanceTracker()
         await tracker.start()
+        let providerDiagnostics = ProviderRequestDiagnostics()
         let skillContext = SkillsContextComposer.compose(for: input)
         let effectiveInput: String
         let runSkillMetadata: [String: SendableValue]
@@ -683,94 +684,117 @@ public actor NanoClawAgent: Agent {
 
         let traceName = "nanoclaw-agent-run"
         let traceGroupId: String? = if let session { session.sessionId } else { nil }
-
-        let availableToolNames = Set(tools.map(\.name))
-        if let deterministicSlash = try await deterministicSlashCommandResponse(
-            for: input,
-            availableToolNames: availableToolNames
-        ) {
-            let metrics = await tracker.finish()
-            return Self.withMetrics(
-                result: deterministicSlash,
-                metrics: metrics,
-                groupFolder: groupFolder,
-                providerRoute: providerRoute,
-                pseudoToolRejected: false,
-                executionRoute: .toolCalling,
-                attemptCount: 1,
-                retryPolicy: Self.retryPolicy(for: .toolCalling),
-                loopBudget: Self.loopBudgetPolicy(
-                    for: .toolCalling,
-                    timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
-                    isScheduledTask: isScheduledTaskRun
-                ),
-                extraMetadata: runSkillMetadata
-            )
+        func runExtraMetadata() async -> [String: SendableValue] {
+            Self.mergedMetadata(runSkillMetadata, await providerDiagnostics.metadata())
         }
 
-        let forceScheduledToolPath = Self.shouldUseForcedScheduledToolPath(
-            for: input,
-            isScheduledTask: isScheduledTaskRun
-        )
-        let route = forceScheduledToolPath
-            ? ExecutionRoute.toolCalling
-            : Self.executionRoute(for: input, isScheduledTask: isScheduledTaskRun)
-        let loopBudget = Self.loopBudgetPolicy(
-            for: route,
-            timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
-            isScheduledTask: isScheduledTaskRun
-        )
-        let retryPolicy = Self.retryPolicy(for: route)
+        let availableToolNames = Set(tools.map(\.name))
+        return try await ProviderRequestDiagnosticsContext.$current.withValue(providerDiagnostics) {
+            if let deterministicSlash = try await deterministicSlashCommandResponse(
+                for: input,
+                availableToolNames: availableToolNames
+            ) {
+                let metrics = await tracker.finish()
+                return Self.withMetrics(
+                    result: deterministicSlash,
+                    metrics: metrics,
+                    groupFolder: groupFolder,
+                    providerRoute: providerRoute,
+                    pseudoToolRejected: false,
+                    executionRoute: .toolCalling,
+                    attemptCount: 1,
+                    retryPolicy: Self.retryPolicy(for: .toolCalling),
+                    loopBudget: Self.loopBudgetPolicy(
+                        for: .toolCalling,
+                        timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
+                        isScheduledTask: isScheduledTaskRun
+                    ),
+                    extraMetadata: await runExtraMetadata()
+                )
+            }
 
-        var attempt = 1
-        var didRetryEmptyVisibleOutput = false
-        while true {
-            do {
-                let result = try await TraceContext.withTrace(
-                    traceName,
-                    groupId: traceGroupId,
-                    metadata: [
-                        "groupFolder": .string(groupFolder),
-                        "agentName": .string(configuration.name),
-                        "executionRoute": .string(route.rawValue),
-                        "attempt": .int(attempt)
-                    ]
-                ) {
-                    if forceScheduledToolPath {
-                        return try await baseToolAgent.run(effectiveInput, session: session, hooks: hooks)
+            let forceScheduledToolPath = Self.shouldUseForcedScheduledToolPath(
+                for: input,
+                isScheduledTask: isScheduledTaskRun
+            )
+            let route = forceScheduledToolPath
+                ? ExecutionRoute.toolCalling
+                : Self.executionRoute(for: input, isScheduledTask: isScheduledTaskRun)
+            let loopBudget = Self.loopBudgetPolicy(
+                for: route,
+                timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
+                isScheduledTask: isScheduledTaskRun
+            )
+            let retryPolicy = Self.retryPolicy(for: route)
+
+            var attempt = 1
+            var didRetryEmptyVisibleOutput = false
+            while true {
+                do {
+                    let result = try await TraceContext.withTrace(
+                        traceName,
+                        groupId: traceGroupId,
+                        metadata: [
+                            "groupFolder": .string(groupFolder),
+                            "agentName": .string(configuration.name),
+                            "executionRoute": .string(route.rawValue),
+                            "attempt": .int(attempt)
+                        ]
+                    ) {
+                        if forceScheduledToolPath {
+                            return try await baseToolAgent.run(effectiveInput, session: session, hooks: hooks)
+                        }
+                        switch route {
+                        case .toolCalling:
+                            return try await baseToolAgent.run(effectiveInput, session: session, hooks: hooks)
+                        case .planAndExecute:
+                            return try await basePlanAndExecuteAgent.run(effectiveInput, session: session, hooks: hooks)
+                        }
                     }
-                    switch route {
-                    case .toolCalling:
-                        return try await baseToolAgent.run(effectiveInput, session: session, hooks: hooks)
-                    case .planAndExecute:
-                        return try await basePlanAndExecuteAgent.run(effectiveInput, session: session, hooks: hooks)
+
+                    let normalizedResult = Self.renderUserFacingMCPOutputIfNeeded(result)
+
+                    try Self.enforceLoopBudget(normalizedResult, budget: loopBudget)
+                    if Self.sanitizeUserFacingOutput(normalizedResult.output)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty {
+                        if !didRetryEmptyVisibleOutput {
+                            didRetryEmptyVisibleOutput = true
+                            attempt += 1
+                            try await Task.sleep(for: .milliseconds(Self.emptyVisibleReplyRetryDelayMs))
+                            continue
+                        }
+
+                        let fallback = AgentResult(
+                            output: "I completed internal steps but couldn't produce a visible reply. Please retry with a shorter, more specific request.",
+                            toolCalls: normalizedResult.toolCalls,
+                            toolResults: normalizedResult.toolResults,
+                            iterationCount: normalizedResult.iterationCount,
+                            duration: normalizedResult.duration,
+                            metadata: normalizedResult.metadata
+                        )
+                        let metrics = await tracker.finish()
+                        return Self.withMetrics(
+                            result: fallback,
+                            metrics: metrics,
+                            groupFolder: groupFolder,
+                            providerRoute: providerRoute,
+                            pseudoToolRejected: false,
+                            executionRoute: route,
+                            attemptCount: attempt,
+                            retryPolicy: retryPolicy,
+                            loopBudget: loopBudget,
+                            stopReason: "empty_visible_output",
+                            extraMetadata: await runExtraMetadata()
+                        )
                     }
-                }
 
-                let normalizedResult = Self.renderUserFacingMCPOutputIfNeeded(result)
+                    try await Self.compactSessionIfNeeded(session: session)
+                    await updateMCPPaginationState(from: normalizedResult)
 
-                try Self.enforceLoopBudget(normalizedResult, budget: loopBudget)
-                if Self.sanitizeUserFacingOutput(normalizedResult.output)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .isEmpty {
-                    if !didRetryEmptyVisibleOutput {
-                        didRetryEmptyVisibleOutput = true
-                        attempt += 1
-                        try await Task.sleep(for: .milliseconds(Self.emptyVisibleReplyRetryDelayMs))
-                        continue
-                    }
-
-                    let fallback = AgentResult(
-                        output: "I completed internal steps but couldn't produce a visible reply. Please retry with a shorter, more specific request.",
-                        toolCalls: normalizedResult.toolCalls,
-                        toolResults: normalizedResult.toolResults,
-                        iterationCount: normalizedResult.iterationCount,
-                        duration: normalizedResult.duration,
-                        metadata: normalizedResult.metadata
-                    )
                     let metrics = await tracker.finish()
                     return Self.withMetrics(
-                        result: fallback,
+                        result: normalizedResult,
                         metrics: metrics,
                         groupFolder: groupFolder,
                         providerRoute: providerRoute,
@@ -779,100 +803,93 @@ public actor NanoClawAgent: Agent {
                         attemptCount: attempt,
                         retryPolicy: retryPolicy,
                         loopBudget: loopBudget,
-                        stopReason: "empty_visible_output",
-                        extraMetadata: runSkillMetadata
+                        stopReason: "completed",
+                        extraMetadata: await runExtraMetadata()
                     )
-                }
-
-                try await Self.compactSessionIfNeeded(session: session)
-                await updateMCPPaginationState(from: normalizedResult)
-
-                let metrics = await tracker.finish()
-                return Self.withMetrics(
-                    result: normalizedResult,
-                    metrics: metrics,
-                    groupFolder: groupFolder,
-                    providerRoute: providerRoute,
-                    pseudoToolRejected: false,
-                    executionRoute: route,
-                    attemptCount: attempt,
-                    retryPolicy: retryPolicy,
-                    loopBudget: loopBudget,
-                    stopReason: "completed",
-                    extraMetadata: runSkillMetadata
-                )
-            } catch let guardrailError as GuardrailError {
-                let fallbackOutput = Self.guardrailFallbackMessage(for: guardrailError)
-                if let hooks {
-                    let guardrailName: String
-                    let message: String
-                    switch guardrailError {
-                    case let .inputTripwireTriggered(name, msg, _):
-                        guardrailName = name
-                        message = msg ?? "Input blocked"
-                    case let .outputTripwireTriggered(name, _, msg, _):
-                        guardrailName = name
-                        message = msg ?? "Output blocked"
-                    case let .toolInputTripwireTriggered(name, _, msg, _):
-                        guardrailName = name
-                        message = msg ?? "Tool input blocked"
-                    case let .toolOutputTripwireTriggered(name, _, msg, _):
-                        guardrailName = name
-                        message = msg ?? "Tool output blocked"
-                    case let .executionFailed(name, err):
-                        guardrailName = name
-                        message = err
-                    }
-                    await hooks.onGuardrailTriggered(
-                        context: nil,
-                        guardrailName: guardrailName,
-                        guardrailType: .output,
-                        result: .tripwire(message: message)
-                    )
-                }
-                return Self.withMetrics(
-                    result: AgentResult(output: fallbackOutput, metadata: ["guardrail": .string(guardrailError.localizedDescription)]),
-                    metrics: await tracker.finish(),
-                    groupFolder: groupFolder,
-                    providerRoute: providerRoute,
-                    pseudoToolRejected: true,
-                    executionRoute: forceScheduledToolPath ? .toolCalling : route,
-                    attemptCount: attempt,
-                    retryPolicy: retryPolicy,
-                    loopBudget: loopBudget,
-                    stopReason: "guardrail",
-                    extraMetadata: runSkillMetadata
-                )
-            } catch {
-                switch Self.retryDecision(for: error, attempt: attempt, policy: retryPolicy) {
-                case .retry(let delay):
-                    attempt += 1
-                    try await Task.sleep(for: delay)
-                case .fail:
-                    if let friendlyResult = Self.userFacingFailureResult(
-                        from: error,
-                        route: route,
-                        loopBudget: loopBudget
-                    ) {
-                        let metrics = await tracker.finish()
-                        return Self.withMetrics(
-                            result: friendlyResult.result,
-                            metrics: metrics,
-                            groupFolder: groupFolder,
-                            providerRoute: providerRoute,
-                            pseudoToolRejected: false,
-                            executionRoute: forceScheduledToolPath ? .toolCalling : route,
-                            attemptCount: attempt,
-                            retryPolicy: retryPolicy,
-                            loopBudget: loopBudget,
-                            stopReason: friendlyResult.stopReason,
-                            extraMetadata: runSkillMetadata
+                } catch let guardrailError as GuardrailError {
+                    let fallbackOutput = Self.guardrailFallbackMessage(for: guardrailError)
+                    if let hooks {
+                        let guardrailName: String
+                        let message: String
+                        switch guardrailError {
+                        case let .inputTripwireTriggered(name, msg, _):
+                            guardrailName = name
+                            message = msg ?? "Input blocked"
+                        case let .outputTripwireTriggered(name, _, msg, _):
+                            guardrailName = name
+                            message = msg ?? "Output blocked"
+                        case let .toolInputTripwireTriggered(name, _, msg, _):
+                            guardrailName = name
+                            message = msg ?? "Tool input blocked"
+                        case let .toolOutputTripwireTriggered(name, _, msg, _):
+                            guardrailName = name
+                            message = msg ?? "Tool output blocked"
+                        case let .executionFailed(name, err):
+                            guardrailName = name
+                            message = err
+                        }
+                        await hooks.onGuardrailTriggered(
+                            context: nil,
+                            guardrailName: guardrailName,
+                            guardrailType: .output,
+                            result: .tripwire(message: message)
                         )
                     }
-                    throw error
+                    return Self.withMetrics(
+                        result: AgentResult(output: fallbackOutput, metadata: ["guardrail": .string(guardrailError.localizedDescription)]),
+                        metrics: await tracker.finish(),
+                        groupFolder: groupFolder,
+                        providerRoute: providerRoute,
+                        pseudoToolRejected: true,
+                        executionRoute: forceScheduledToolPath ? .toolCalling : route,
+                        attemptCount: attempt,
+                        retryPolicy: retryPolicy,
+                        loopBudget: loopBudget,
+                        stopReason: "guardrail",
+                        extraMetadata: await runExtraMetadata()
+                    )
+                } catch {
+                    switch Self.retryDecision(for: error, attempt: attempt, policy: retryPolicy) {
+                    case .retry(let delay):
+                        attempt += 1
+                        try await Task.sleep(for: delay)
+                    case .fail:
+                        if let friendlyResult = Self.userFacingFailureResult(
+                            from: error,
+                            route: route,
+                            loopBudget: loopBudget
+                        ) {
+                            let metrics = await tracker.finish()
+                            return Self.withMetrics(
+                                result: friendlyResult.result,
+                                metrics: metrics,
+                                groupFolder: groupFolder,
+                                providerRoute: providerRoute,
+                                pseudoToolRejected: false,
+                                executionRoute: forceScheduledToolPath ? .toolCalling : route,
+                                attemptCount: attempt,
+                                retryPolicy: retryPolicy,
+                                loopBudget: loopBudget,
+                                stopReason: friendlyResult.stopReason,
+                                extraMetadata: await runExtraMetadata()
+                            )
+                        }
+                        throw error
+                    }
                 }
             }
         }
+    }
+
+    private static func mergedMetadata(
+        _ base: [String: SendableValue],
+        _ overlay: [String: SendableValue]
+    ) -> [String: SendableValue] {
+        var merged = base
+        for (key, value) in overlay {
+            merged[key] = value
+        }
+        return merged
     }
 
     private func paginationContinuationInvocation(
@@ -1102,7 +1119,8 @@ public actor NanoClawAgent: Agent {
             status: "success",
             result: result.output,
             toolCallsCount: result.toolCalls.count,
-            newSessionId: session.sessionId
+            newSessionId: session.sessionId,
+            metadata: Self.metadataStrings(from: result.metadata)
         )
     }
 
@@ -1237,6 +1255,30 @@ public actor NanoClawAgent: Agent {
             "nanoclaw.skills.resolver_applied": .bool(payload.resolverApplied),
             "nanoclaw.skills.resolver_selected": .bool(payload.selectedByResolver)
         ]
+    }
+
+    private static func metadataStrings(from metadata: [String: SendableValue]) -> [String: String] {
+        var converted: [String: String] = [:]
+        for (key, value) in metadata {
+            switch value {
+            case .string(let string):
+                converted[key] = string
+            case .int(let int):
+                converted[key] = String(int)
+            case .double(let double):
+                converted[key] = String(double)
+            case .bool(let bool):
+                converted[key] = bool ? "true" : "false"
+            case .array(let array):
+                let strings = array.compactMap(\.stringValue)
+                if !strings.isEmpty {
+                    converted[key] = strings.joined(separator: ",")
+                }
+            default:
+                continue
+            }
+        }
+        return converted
     }
 
     private static func sanitizeUserFacingOutput(_ output: String) -> String {
@@ -2579,13 +2621,15 @@ public struct NanoClawAgentResult: Sendable {
     let result: String
     let toolCallsCount: Int
     let newSessionId: String
+    let metadata: [String: String]
     
     var json: String {
         let dict: [String: Any] = [
             "status": status,
             "result": result,
             "tool_calls_count": toolCallsCount,
-            "newSessionId": newSessionId
+            "newSessionId": newSessionId,
+            "metadata": metadata
         ]
         let data = try! JSONSerialization.data(withJSONObject: dict)
         return String(data: data, encoding: .utf8)!

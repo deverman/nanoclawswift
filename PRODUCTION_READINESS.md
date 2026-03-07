@@ -1,6 +1,6 @@
 # Production Readiness
 
-Updated: 2026-03-06
+Updated: 2026-03-07
 
 ## Runtime Baseline
 
@@ -23,6 +23,7 @@ Production runtime is Swift-first:
    - `swift run nanoclaw-hostctl status`
 4. Telegram smoke succeeds with owner DM.
 5. No stale-doc CI violations from docs consistency guard.
+6. Required GitHub Actions workflows pass on the branch head before release, including Linux binary build validation.
 
 ## Go/No-Go Gate (Operator Checklist)
 
@@ -44,6 +45,9 @@ Mark each gate `pass` / `fail`:
    - run a paged MCP command, then `show more`, then `show more 3`
 7. Rate-limit safety:
    - verify `NANOCLAW_PROVIDER_RPM_LIMIT` is set to a safe value for production load.
+8. GitHub Actions status:
+   - required workflows for the release branch head are green
+   - specifically include Linux binary build validation and the main CI workflow
 
 Go decision:
 
@@ -59,8 +63,9 @@ Go decision:
 5. MCP runtime visibility in Telegram: `pass`
 6. Pagination UX: `pass`
 7. Rate-limit safety default: `pass`
+8. GitHub Actions status: `fail` (observed failing `Build Linux Binary (glibc)` workflow notification; must be fixed and re-run green)
 
-Current decision: `NO-GO` until scheduler/provider soak confidence is complete.
+Current decision: `NO-GO` until scheduler/provider soak confidence is complete and required GitHub Actions workflows are green.
 
 ## Security Gates
 
@@ -112,6 +117,7 @@ Build/restart tuning:
 2. If host network/provider is unavailable, scheduled reports can be delayed.
 3. Host MCP bridge must be reachable for `runtime: "host"` MCP servers.
 4. Provider-side rate limits can still occur under sustained user bursts.
+5. A local deploy can look healthy while GitHub Actions Linux validation is still failing; release readiness requires both.
 
 ## Triage Runbook
 

@@ -33,6 +33,10 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         let openAfterConsecutive429: Int
         let cooldownSeconds: Double
     }
+
+    struct FallbackEvent: Sendable, Equatable {
+        let reason: String
+    }
     
     public init(
         apiKey: String,
@@ -263,6 +267,7 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         if let error = lastError,
            shouldUseFallback(for: error),
            let fallbackProvider {
+            await ProviderRequestDiagnosticsContext.current?.recordFallback(reason: "primary_exhausted")
             logger.warning("Primary provider exhausted; attempting fallback provider.", metadata: [
                 "requestTraceID": "\(requestTraceID)",
                 "primaryModel": "\(model)"
@@ -311,6 +316,7 @@ public actor OpenAICompatibleProvider: InferenceProvider {
             resetRateLimitState()
         } catch {
             if shouldUseFallback(for: error), let fallbackProvider {
+                await ProviderRequestDiagnosticsContext.current?.recordFallback(reason: "tool_call_error")
                 logger.warning("Primary provider tool call failed; attempting fallback provider.", metadata: [
                     "requestTraceID": "\(requestTraceID)",
                     "primaryModel": "\(model)"
@@ -334,6 +340,7 @@ public actor OpenAICompatibleProvider: InferenceProvider {
             finishReason: finishReason,
             tools: tools
         ), let fallbackProvider {
+            await ProviderRequestDiagnosticsContext.current?.recordFallback(reason: "behavioral_tool_failure")
             logger.warning("Primary provider produced non-actionable tool response; attempting fallback provider.", metadata: [
                 "requestTraceID": "\(requestTraceID)",
                 "primaryModel": "\(model)"
@@ -946,4 +953,27 @@ public actor OpenAICompatibleProvider: InferenceProvider {
             return ["type": "string"]
         }
     }
+}
+
+actor ProviderRequestDiagnostics {
+    private var fallbackEvents: [OpenAICompatibleProvider.FallbackEvent] = []
+
+    func recordFallback(reason: String) {
+        fallbackEvents.append(.init(reason: reason))
+    }
+
+    func metadata() -> [String: SendableValue] {
+        guard !fallbackEvents.isEmpty else { return [:] }
+        let reasons = fallbackEvents.map(\.reason)
+        return [
+            "nanoclaw.provider_fallback_used": .bool(true),
+            "nanoclaw.provider_fallback_count": .int(fallbackEvents.count),
+            "nanoclaw.provider_fallback_reasons": .array(reasons.map { .string($0) }),
+            "nanoclaw.provider_fallback_reason": .string(reasons.last ?? "unknown")
+        ]
+    }
+}
+
+enum ProviderRequestDiagnosticsContext {
+    @TaskLocal static var current: ProviderRequestDiagnostics?
 }
