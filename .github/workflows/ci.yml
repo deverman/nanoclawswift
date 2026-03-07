@@ -51,7 +51,6 @@ jobs:
     needs: build-and-test
     env:
       NANOCLAW_DEVCTL_SWIFT_SDK: swift-6.2.3-RELEASE_static-linux-0.0.1
-      NANOCLAW_CI_LINUX_TRIPLE: x86_64-swift-linux-musl
     
     steps:
     - name: Checkout
@@ -83,7 +82,7 @@ jobs:
           --product nanoclaw-agent \
           --disable-automatic-resolution \
           --swift-sdk "$NANOCLAW_DEVCTL_SWIFT_SDK" \
-          --triple "$NANOCLAW_CI_LINUX_TRIPLE" \
+          --triple aarch64-swift-linux-musl \
           --build-path .build/linux-static-sdk
         BIN_PATH="$(find .build/linux-static-sdk -type f -name nanoclaw-agent | head -1)"
         test -n "$BIN_PATH"
@@ -122,7 +121,7 @@ jobs:
           CONTAINER_BIN=/opt/homebrew/opt/container/bin/container
         fi
         test -n "$CONTAINER_BIN"
-        "$CONTAINER_BIN" build --platform linux/amd64 -f container/Dockerfile.slim -t nanoclawswift-agent:slim .
+        "$CONTAINER_BIN" build -f container/Dockerfile.slim -t nanoclawswift-agent:slim .
 
     - name: Test container runtime smoke checks
       run: |
