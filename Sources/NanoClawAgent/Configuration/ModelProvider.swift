@@ -42,6 +42,8 @@ public enum ModelName: String, Codable, Sendable {
     case gpt52Instant = "gpt-5.2-instant"
     case gpt52Thinking = "gpt-5.2-thinking"
     case gpt52Codex = "gpt-5.2-codex"
+    case gpt41Mini = "gpt-4.1-mini"
+    case gpt41 = "gpt-4.1"
     // Legacy models
     case gpt4o = "gpt-4o"
     case gpt4oMini = "gpt-4o-mini"

@@ -30,6 +30,8 @@ func testParseGoogleNewsRSSExtractsItems() {
       <item>
         <title><![CDATA[Apple announces something]]></title>
         <link>https://example.com/apple-news</link>
+        <pubDate>Sun, 01 Mar 2026 07:00:00 GMT</pubDate>
+        <source url="https://example.com">Example</source>
       </item>
       <item>
         <title><![CDATA[Another Apple update]]></title>
@@ -42,4 +44,13 @@ func testParseGoogleNewsRSSExtractsItems() {
     #expect(results.count == 2)
     #expect(results[0]["title"] == "Apple announces something")
     #expect(results[0]["url"] == "https://example.com/apple-news")
+    #expect(results[0]["published_at"] == "Sun, 01 Mar 2026 07:00:00 GMT")
+    #expect(results[0]["source"] == "Example")
+}
+
+@Test
+func testIsNewsLikeQueryMatchesNewsSignals() {
+    #expect(LLMRelayServer.isNewsLikeQuery("latest Apple news and announcements"))
+    #expect(LLMRelayServer.isNewsLikeQuery("daily swift digest for today"))
+    #expect(!LLMRelayServer.isNewsLikeQuery("list files in project root"))
 }

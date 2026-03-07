@@ -29,6 +29,19 @@ func testConfigLoaderRespectsModelOverride() async throws {
 }
 
 @Test
+func testConfigLoaderRespectsGPT41MiniOverride() async throws {
+    try await TestEnvironmentLock.shared.withEnvs([
+        "OPENAI_API_KEY": "test-openai-key",
+        "MODEL_PROVIDER": "openai",
+        "MODEL_NAME": "gpt-4.1-mini"
+    ]) {
+        let config = try await ConfigLoader.load(from: "/tmp/nonexistent.json")
+        #expect(config.provider == .openai)
+        #expect(config.model == .gpt41Mini)
+    }
+}
+
+@Test
 func testConfigLoaderUsesLongerDefaultTimeoutWhenUnset() async throws {
     try await TestEnvironmentLock.shared.withEnvs([
         "OPENAI_API_KEY": "test-openai-key",
@@ -97,5 +110,22 @@ func testConfigLoaderLoadsOpenAIFallbackForKimi() async throws {
         #expect(config.fallbackModel == .gpt4oMini)
         #expect(config.fallbackBaseURL == "https://api.openai.com/v1")
         #expect(config.fallbackRequestsPerMinuteLimit == 3)
+    }
+}
+
+@Test
+func testConfigLoaderInheritsPrimaryBaseURLForSameProviderFallback() async throws {
+    try await TestEnvironmentLock.shared.withEnvs([
+        "OPENAI_API_KEY": "test-openai-key",
+        "MODEL_PROVIDER": "openai",
+        "BASE_URL": "http://192.168.64.1:18081/relay/openai/v1",
+        "NANOCLAW_FALLBACK_PROVIDER": "openai",
+        "NANOCLAW_FALLBACK_BASE_URL": nil
+    ]) {
+        let config = try await ConfigLoader.load(from: "/tmp/nonexistent.json")
+        #expect(config.provider == .openai)
+        #expect(config.effectiveBaseURL == "http://192.168.64.1:18081/relay/openai/v1")
+        #expect(config.fallbackProvider == .openai)
+        #expect(config.fallbackBaseURL == "http://192.168.64.1:18081/relay/openai/v1")
     }
 }

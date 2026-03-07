@@ -143,6 +143,18 @@ public struct ConfigLoader {
                   !raw.isEmpty else { return nil }
             return ModelProvider(rawValue: raw)
         }()
+        let fallbackBaseURL: String? = {
+            if let explicit = envFallbackBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !explicit.isEmpty {
+                return explicit
+            }
+            // If fallback provider matches primary provider, inherit the resolved primary base URL
+            // so relay routing remains consistent unless explicitly overridden.
+            if let fallbackProvider, fallbackProvider == provider {
+                return baseURL
+            }
+            return nil
+        }()
         let fallbackModel: ModelName? = {
             guard let raw = envFallbackModel?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !raw.isEmpty else { return nil }
@@ -182,7 +194,7 @@ public struct ConfigLoader {
             fallbackProvider: fallbackProvider,
             fallbackAPIKey: fallbackAPIKey,
             fallbackModel: fallbackModel,
-            fallbackBaseURL: envFallbackBaseURL,
+            fallbackBaseURL: fallbackBaseURL,
             fallbackRequestsPerMinuteLimit: fallbackRequestsPerMinuteLimit
         )
     }

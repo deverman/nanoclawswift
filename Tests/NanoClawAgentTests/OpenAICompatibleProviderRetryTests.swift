@@ -38,3 +38,15 @@ func testRemainingCooldownSecondsUsesOpenUntil() {
     let remaining = OpenAICompatibleProvider.remainingCooldownSeconds(now: now, openUntil: openUntil)
     #expect(abs(remaining - 25.4) < 0.001)
 }
+
+@Test
+func testCapabilityLimitationDisclaimerDetectionMatchesKnownPhrases() {
+    let text = "I don't have access to real-time web search results in this environment."
+    #expect(OpenAICompatibleProvider.containsCapabilityLimitationDisclaimer(text))
+}
+
+@Test
+func testCapabilityLimitationDisclaimerDetectionIgnoresNormalResponses() {
+    let text = "Here is a summary based on the tool results."
+    #expect(!OpenAICompatibleProvider.containsCapabilityLimitationDisclaimer(text))
+}

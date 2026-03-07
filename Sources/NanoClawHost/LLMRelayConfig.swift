@@ -81,12 +81,12 @@ enum LLMRelayConfig {
         var updated = passthrough
         let existingBaseURL = passthrough["BASE_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let shouldInject = settings.mode == .force || existingBaseURL.isEmpty
-        guard shouldInject else {
-            return updated
+        if shouldInject {
+            let provider = resolveProvider(from: passthrough)
+            updated["BASE_URL"] = relayBaseURL(for: provider, settings: settings)
         }
 
-        let provider = resolveProvider(from: passthrough)
-        updated["BASE_URL"] = "\(settings.relayBaseRoot)/relay/\(provider.rawValue)/v1"
+        applyFallbackRelayBaseURLIfNeeded(updated: &updated, settings: settings)
         return updated
     }
 
@@ -104,5 +104,47 @@ enum LLMRelayConfig {
         guard !suffix.isEmpty else { return nil }
         let upstream = provider.upstreamBaseURL.appendingPathComponent(suffix)
         return ResolvedRoute(provider: provider, upstreamURL: upstream)
+    }
+
+    private static func relayBaseURL(for provider: LLMRelayProvider, settings: LLMRelaySettings) -> String {
+        "\(settings.relayBaseRoot)/relay/\(provider.rawValue)/v1"
+    }
+
+    private static func resolveFallbackProvider(from passthrough: [String: String]) -> LLMRelayProvider? {
+        guard let raw = passthrough["NANOCLAW_FALLBACK_PROVIDER"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+              !raw.isEmpty else {
+            return nil
+        }
+        switch raw {
+        case "openai":
+            return .openai
+        case "anthropic":
+            return .anthropic
+        case "kimi", "moonshot":
+            return .kimi
+        default:
+            return nil
+        }
+    }
+
+    private static func applyFallbackRelayBaseURLIfNeeded(
+        updated: inout [String: String],
+        settings: LLMRelaySettings
+    ) {
+        guard let fallbackProvider = resolveFallbackProvider(from: updated) else { return }
+        let fallbackRelay = relayBaseURL(for: fallbackProvider, settings: settings)
+        let current = updated["NANOCLAW_FALLBACK_BASE_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if settings.mode == .force {
+            updated["NANOCLAW_FALLBACK_BASE_URL"] = fallbackRelay
+            return
+        }
+
+        if current.isEmpty || current.lowercased().hasPrefix(fallbackProvider.upstreamBaseURL.absoluteString.lowercased()) {
+            updated["NANOCLAW_FALLBACK_BASE_URL"] = fallbackRelay
+        }
     }
 }

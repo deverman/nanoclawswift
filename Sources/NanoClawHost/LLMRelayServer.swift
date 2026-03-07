@@ -776,6 +776,13 @@ final class LLMRelayServer: @unchecked Sendable {
     }
 
     private func performWebSearch(query: String, limit: Int) async throws -> (provider: String, results: [[String: String]]) {
+        if Self.isNewsLikeQuery(query) {
+            let newsResults = try await performGoogleNewsRSSSearch(query: query, limit: limit)
+            if !newsResults.isEmpty {
+                return ("google_news_rss", newsResults)
+            }
+        }
+
         let ddgResults = try await performDuckDuckGoSearch(query: query, limit: limit)
         if !ddgResults.isEmpty,
            !ddgResults.allSatisfy({ ($0["url"] ?? "").contains("duckduckgo.com/") }) {
@@ -862,34 +869,75 @@ final class LLMRelayServer: @unchecked Sendable {
 
     nonisolated static func parseGoogleNewsRSS(xml: String, limit: Int) -> [[String: String]] {
         guard limit > 0 else { return [] }
-        let pattern = #"<item>[\s\S]*?<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<\/item>"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+        let itemPattern = #"<item>([\s\S]*?)<\/item>"#
+        guard let itemRegex = try? NSRegularExpression(pattern: itemPattern, options: []) else {
             return []
         }
         let nsRange = NSRange(xml.startIndex..<xml.endIndex, in: xml)
-        let matches = regex.matches(in: xml, options: [], range: nsRange)
+        let matches = itemRegex.matches(in: xml, options: [], range: nsRange)
         var results: [[String: String]] = []
+
         for match in matches {
             if results.count >= limit { break }
-            guard match.numberOfRanges >= 3,
-                  let titleRange = Range(match.range(at: 1), in: xml),
-                  let linkRange = Range(match.range(at: 2), in: xml) else {
+            guard match.numberOfRanges >= 2,
+                  let itemRange = Range(match.range(at: 1), in: xml) else {
                 continue
             }
-            let title = xml[titleRange].trimmingCharacters(in: .whitespacesAndNewlines)
-            let link = xml[linkRange].trimmingCharacters(in: .whitespacesAndNewlines)
+            let itemBody = String(xml[itemRange])
+            let title = extractFirstXMLTagValue("title", from: itemBody) ?? ""
+            let link = extractFirstXMLTagValue("link", from: itemBody) ?? ""
+            let pubDate = extractFirstXMLTagValue("pubDate", from: itemBody)
+            let source = extractFirstXMLTagValue("source", from: itemBody)
+
             guard !title.isEmpty,
                   let linkURL = URL(string: link),
                   isSafePublicURL(linkURL) else {
                 continue
             }
-            results.append([
+            var entry: [String: String] = [
                 "title": title,
                 "url": link,
                 "snippet": title,
-            ])
+            ]
+            if let pubDate, !pubDate.isEmpty {
+                entry["published_at"] = pubDate
+            }
+            if let source, !source.isEmpty {
+                entry["source"] = source
+            }
+            results.append(entry)
         }
         return results
+    }
+
+    nonisolated static func isNewsLikeQuery(_ query: String) -> Bool {
+        let normalized = query.lowercased()
+        let markers = [
+            "news",
+            "headline",
+            "digest",
+            "report",
+            "latest",
+            "today",
+            "announcement",
+            "launch",
+            "release"
+        ]
+        return markers.contains { normalized.contains($0) }
+    }
+
+    nonisolated private static func extractFirstXMLTagValue(_ tag: String, from xml: String) -> String? {
+        let pattern = "<\(tag)(?:\\s[^>]*)?>\\s*(?:<!\\[CDATA\\[)?(.*?)(?:\\]\\]>)?\\s*</\(tag)>"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let range = NSRange(xml.startIndex..<xml.endIndex, in: xml)
+        guard let match = regex.firstMatch(in: xml, options: [], range: range),
+              match.numberOfRanges >= 2,
+              let valueRange = Range(match.range(at: 1), in: xml) else {
+            return nil
+        }
+        return xml[valueRange].trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     nonisolated static func normalizeFocusRelaySubcommand(_ value: String) -> String {

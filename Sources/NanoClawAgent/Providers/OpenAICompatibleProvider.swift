@@ -328,6 +328,22 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         if ProcessInfo.processInfo.environment["NANOCLAW_DEBUG_TOOLS"] == "1" {
             print("[OpenAICompatibleProvider] Parsed tool calls: \(parsedToolCalls.count)")
         }
+        if shouldUseFallbackForBehavioralToolFailure(
+            content: content,
+            parsedToolCalls: parsedToolCalls,
+            finishReason: finishReason,
+            tools: tools
+        ), let fallbackProvider {
+            logger.warning("Primary provider produced non-actionable tool response; attempting fallback provider.", metadata: [
+                "requestTraceID": "\(requestTraceID)",
+                "primaryModel": "\(model)"
+            ])
+            return try await fallbackProvider.chatCompletionWithTools(
+                messages: messages,
+                tools: tools,
+                options: options
+            )
+        }
         return (content, parsedToolCalls, finishReason)
     }
     
@@ -381,7 +397,7 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         let content = message["content"] as? String
         let finishReasonString = firstChoice["finish_reason"] as? String ?? "stop"
         
-        let finishReason: InferenceResponse.FinishReason = finishReasonString == "tool_calls" ? .toolCall : .completed
+        var finishReason: InferenceResponse.FinishReason = finishReasonString == "tool_calls" ? .toolCall : .completed
         
         // Parse tool calls if present
         var parsedToolCalls: [InferenceResponse.ParsedToolCall] = []
@@ -417,12 +433,20 @@ public actor OpenAICompatibleProvider: InferenceProvider {
             }
         }
 
-        if parsedToolCalls.isEmpty,
-           let content,
-           content.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("```tool") {
-            logger.warning("Model returned pseudo tool syntax in text without structured tool_calls.", metadata: [
-                "model": "\(model)"
-            ])
+        if parsedToolCalls.isEmpty, let content {
+            let recoveredPseudoCalls = Self.recoverPseudoToolCalls(from: content)
+            if !recoveredPseudoCalls.isEmpty {
+                parsedToolCalls = recoveredPseudoCalls
+                finishReason = .toolCall
+                logger.warning("Recovered pseudo tool syntax into structured tool calls.", metadata: [
+                    "model": "\(model)",
+                    "recoveredCount": "\(recoveredPseudoCalls.count)"
+                ])
+            } else if Self.containsPseudoToolSyntax(content) {
+                logger.warning("Model returned pseudo tool syntax in text without structured tool_calls.", metadata: [
+                    "model": "\(model)"
+                ])
+            }
         }
         
         return (content, parsedToolCalls, finishReason)
@@ -435,6 +459,36 @@ public actor OpenAICompatibleProvider: InferenceProvider {
                 || reason.localizedCaseInsensitiveContains("temporarily unavailable due to rate limits")
         }
         return false
+    }
+
+    private func shouldUseFallbackForBehavioralToolFailure(
+        content: String?,
+        parsedToolCalls: [InferenceResponse.ParsedToolCall],
+        finishReason: InferenceResponse.FinishReason,
+        tools: [ToolDefinition]
+    ) -> Bool {
+        guard !tools.isEmpty else { return false }
+        guard parsedToolCalls.isEmpty else { return false }
+        if finishReason == .toolCall {
+            return true
+        }
+        guard let content else { return false }
+        return Self.containsCapabilityLimitationDisclaimer(content)
+            || Self.containsPseudoToolSyntax(content)
+    }
+
+    nonisolated static func containsCapabilityLimitationDisclaimer(_ text: String) -> Bool {
+        let normalized = text.lowercased()
+        let markers = [
+            "i don't have access",
+            "i do not have access",
+            "can't access",
+            "cannot access",
+            "in this environment",
+            "real-time web search",
+            "live data"
+        ]
+        return markers.contains(where: { normalized.contains($0) })
     }
 
     private func enforceCircuitBreakerIfOpen(requestTraceID: String) throws {
@@ -536,6 +590,216 @@ public actor OpenAICompatibleProvider: InferenceProvider {
             var converted: [String: SendableValue] = [:]
             for (key, item) in dictionary {
                 if let sendable = convertToSendableValue(item) {
+                    converted[key] = sendable
+                }
+            }
+            return .dictionary(converted)
+        }
+        return nil
+    }
+
+    nonisolated static func containsPseudoToolSyntax(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if trimmed.range(of: #"`{3}\s*tool"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        if trimmed.range(of: #"`{3}\s*functions?(?:\.[\w.-]+)?(?::\d+)?\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        if trimmed.range(of: #"<\s*function[_-]?calls\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        if trimmed.range(of: #"<\s*invoke\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        return false
+    }
+
+    nonisolated static func recoverPseudoToolCalls(from text: String) -> [InferenceResponse.ParsedToolCall] {
+        var calls: [InferenceResponse.ParsedToolCall] = []
+
+        if let regex = try? NSRegularExpression(
+            pattern: #"<\s*invoke\s+name\s*=\s*"([^"]+)"\s*>([\s\S]*?)<\s*/\s*invoke\s*>"#,
+            options: [.caseInsensitive]
+        ) {
+            let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+            let matches = regex.matches(in: text, options: [], range: nsRange)
+            for match in matches where match.numberOfRanges >= 3 {
+                guard let nameRange = Range(match.range(at: 1), in: text),
+                      let bodyRange = Range(match.range(at: 2), in: text) else {
+                    continue
+                }
+                let rawName = String(text[nameRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalizedName = normalizePseudoToolName(rawName)
+                let body = String(text[bodyRange])
+                let arguments = parseInvokeParameters(body)
+                calls.append(
+                    InferenceResponse.ParsedToolCall(
+                        id: "pseudo-\(UUID().uuidString)",
+                        name: normalizedName,
+                        arguments: arguments
+                    )
+                )
+            }
+        }
+
+        if !calls.isEmpty {
+            return calls
+        }
+
+        if let regex = try? NSRegularExpression(
+            pattern: #"`{3}\s*tool\s*[\r\n]+([a-zA-Z0-9_-]+)\s*[\r\n]+([\s\S]*?)`{3}"#,
+            options: [.caseInsensitive]
+        ) {
+            let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+            let matches = regex.matches(in: text, options: [], range: nsRange)
+            for match in matches where match.numberOfRanges >= 3 {
+                guard let nameRange = Range(match.range(at: 1), in: text),
+                      let argsRange = Range(match.range(at: 2), in: text) else {
+                    continue
+                }
+                let rawName = String(text[nameRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalizedName = normalizePseudoToolName(rawName)
+                let rawArgs = String(text[argsRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                let arguments = parseJSONObjectArguments(rawArgs)
+                calls.append(
+                    InferenceResponse.ParsedToolCall(
+                        id: "pseudo-\(UUID().uuidString)",
+                        name: normalizedName,
+                        arguments: arguments
+                    )
+                )
+            }
+        }
+
+        if calls.isEmpty,
+           let regex = try? NSRegularExpression(
+               pattern: #"`{3}\s*functions?(?:\.([a-zA-Z0-9_.-]+))?(?::\d+)?\s*[\r\n]+([\s\S]*?)`{3}"#,
+               options: [.caseInsensitive]
+           ) {
+            let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+            let matches = regex.matches(in: text, options: [], range: nsRange)
+            for match in matches where match.numberOfRanges >= 3 {
+                let capturedName: String? = {
+                    guard match.range(at: 1).location != NSNotFound,
+                          let range = Range(match.range(at: 1), in: text) else {
+                        return nil
+                    }
+                    return String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+                }()
+                guard let payloadRange = Range(match.range(at: 2), in: text) else {
+                    continue
+                }
+                let rawPayload = String(text[payloadRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                let name = normalizePseudoToolName(capturedName ?? "functions")
+                let arguments = parseJSONObjectArguments(rawPayload)
+                calls.append(
+                    InferenceResponse.ParsedToolCall(
+                        id: "pseudo-\(UUID().uuidString)",
+                        name: name,
+                        arguments: arguments
+                    )
+                )
+            }
+        }
+
+        return calls
+    }
+
+    nonisolated private static func normalizePseudoToolName(_ name: String) -> String {
+        let normalized = name.lowercased()
+        switch normalized {
+        case "search_web":
+            return "web_search"
+        case "fetch_web":
+            return "web_fetch"
+        case "send_message":
+            return "send_message"
+        case let value where value.hasSuffix("__web_search"):
+            return "web_search"
+        case let value where value.hasSuffix("__web_fetch"):
+            return "web_fetch"
+        case let value where value.hasSuffix("__send_message"):
+            return "send_message"
+        default:
+            return name
+        }
+    }
+
+    nonisolated private static func parseInvokeParameters(_ body: String) -> [String: SendableValue] {
+        var parsed: [String: SendableValue] = [:]
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<\s*parameter\s+name\s*=\s*"([^"]+)"\s*>([\s\S]*?)<\s*/\s*parameter\s*>"#,
+            options: [.caseInsensitive]
+        ) else {
+            return parsed
+        }
+        let nsRange = NSRange(body.startIndex..<body.endIndex, in: body)
+        let matches = regex.matches(in: body, options: [], range: nsRange)
+        for match in matches where match.numberOfRanges >= 3 {
+            guard let keyRange = Range(match.range(at: 1), in: body),
+                  let valueRange = Range(match.range(at: 2), in: body) else {
+                continue
+            }
+            let key = String(body[keyRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawValue = String(body[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if key.isEmpty {
+                continue
+            }
+            if let jsonValue = parseJSONValue(rawValue) {
+                parsed[key] = jsonValue
+            } else {
+                parsed[key] = .string(rawValue)
+            }
+        }
+        return parsed
+    }
+
+    nonisolated private static func parseJSONObjectArguments(_ raw: String) -> [String: SendableValue] {
+        guard let data = raw.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        var parsed: [String: SendableValue] = [:]
+        for (key, value) in json {
+            if let converted = convertPseudoSendableValue(value) {
+                parsed[key] = converted
+            }
+        }
+        return parsed
+    }
+
+    nonisolated private static func parseJSONValue(_ raw: String) -> SendableValue? {
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) else {
+            return nil
+        }
+        return convertPseudoSendableValue(object)
+    }
+
+    nonisolated private static func convertPseudoSendableValue(_ value: Any) -> SendableValue? {
+        if value is NSNull { return .null }
+        if let str = value as? String { return .string(str) }
+        if let bool = value as? Bool { return .bool(bool) }
+        if let num = value as? NSNumber {
+            if num === true as NSNumber || num === false as NSNumber {
+                return .bool(num.boolValue)
+            }
+            let doubleValue = num.doubleValue
+            let intValue = num.int64Value
+            if Double(intValue) == doubleValue {
+                return .int(Int(intValue))
+            }
+            return .double(doubleValue)
+        }
+        if let array = value as? [Any] {
+            return .array(array.compactMap(convertPseudoSendableValue))
+        }
+        if let dictionary = value as? [String: Any] {
+            var converted: [String: SendableValue] = [:]
+            for (key, item) in dictionary {
+                if let sendable = convertPseudoSendableValue(item) {
                     converted[key] = sendable
                 }
             }
