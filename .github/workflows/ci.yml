@@ -45,8 +45,8 @@ jobs:
       with:
         name: nanoclaw-agent
         path: .build/release/nanoclaw-agent
-
-  build-static-linux:
+        
+  container-build:
     runs-on: macos-26
     needs: build-and-test
     env:
@@ -56,7 +56,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Setup Swift 6.2.3
+    - name: Setup Swift 6.2.3 for static SDK build
       uses: swift-actions/setup-swift@v3
       with:
         swift-version: '6.2.3'
@@ -73,56 +73,10 @@ jobs:
         swift sdk install \
           --checksum f30ec724d824ef43b5546e02ca06a8682dafab4b26a99fbb0e858c347e507a2c \
           https://download.swift.org/swift-6.2.3-release/static-sdk/swift-6.2.3-RELEASE/swift-6.2.3-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
-
-    - name: Build static Linux agent
-      run: |
-        SWIFT_BIN="$(command -v swift)"
-        "$SWIFT_BIN" --version
-        "$SWIFT_BIN" build -c release \
-          --product nanoclaw-agent \
-          --disable-automatic-resolution \
-          --swift-sdk "$NANOCLAW_DEVCTL_SWIFT_SDK" \
-          --triple aarch64-swift-linux-musl \
-          --build-path .build/linux-static-sdk
-        BIN_PATH="$(find .build/linux-static-sdk -type f -name nanoclaw-agent | head -1)"
-        test -n "$BIN_PATH"
-        cp "$BIN_PATH" .build/linux-output-nanoclaw-agent
-        file .build/linux-output-nanoclaw-agent
-
-    - name: Upload static Linux agent artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: nanoclaw-agent-linux-static
-        path: .build/linux-output-nanoclaw-agent
-
-  container-build:
-    runs-on: macos-26
-    needs: build-static-linux
-
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Download static Linux agent artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: nanoclaw-agent-linux-static
-        path: .build
-
-    - name: Verify downloaded binary
-      run: |
-        test -f .build/linux-output-nanoclaw-agent
-        file .build/linux-output-nanoclaw-agent
-
+      
     - name: Build container (slim)
-      run: |
-        CONTAINER_BIN="$(command -v container || true)"
-        if [ -z "$CONTAINER_BIN" ] && [ -x /opt/homebrew/opt/container/bin/container ]; then
-          CONTAINER_BIN=/opt/homebrew/opt/container/bin/container
-        fi
-        test -n "$CONTAINER_BIN"
-        "$CONTAINER_BIN" build -f container/Dockerfile.slim -t nanoclawswift-agent:slim .
-
+      run: swift run nanoclaw-devctl build-agent-image slim
+        
     - name: Test container runtime smoke checks
       run: |
         container system start || true
