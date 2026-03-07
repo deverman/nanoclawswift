@@ -33,7 +33,7 @@ jobs:
     
     - name: Build Release Binary
       run: |
-        swift build -c release --target NanoClawAgent
+        swift build -c release --product nanoclaw-agent
         # Verify it's dynamically linked with glibc
         file .build/release/nanoclaw-agent
         ldd .build/release/nanoclaw-agent | head -10

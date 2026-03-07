@@ -66,6 +66,7 @@ jobs:
       run: |
         swift sdk list | grep -F "$NANOCLAW_DEVCTL_SWIFT_SDK" && exit 0
         swift sdk install \
+          --checksum adf14ce1f6338f66b55f7a6ef39a448fd0fb353d5262be4666e98140f4c9b4fd \
           https://download.swift.org/swift-6.2.4-release/static-sdk/swift-6.2.4-RELEASE/swift-6.2.4-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
       
     - name: Build container (slim)
