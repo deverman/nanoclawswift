@@ -1,5 +1,5 @@
 # NanoClawSwift Agent - Slim Container
-# Uses a prebuilt Linux binary copied from the host workspace.
+# Uses a prebuilt Linux binary copied from the workspace.
 
 FROM swift:6.2.3-slim
 
@@ -20,7 +20,7 @@ RUN id -u nanoclaw >/dev/null 2>&1 || useradd -m -s /bin/bash nanoclaw && \
     chmod 750 /workspace/ipc/tasks && \
     chmod 750 /workspace/sessions
 
-# Copy the prebuilt Linux binary (built via `container run ... swift build --product nanoclaw-agent`)
+# Copy the prebuilt Linux binary from CI or local dev workflows.
 COPY --chown=nanoclaw:nanoclaw .build/linux-output-nanoclaw-agent /app/nanoclaw-agent
 
 # Set environment
