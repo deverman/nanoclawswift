@@ -225,6 +225,22 @@ func testCompatibleSwiftExecutablePathUses623ToolchainFor623StaticSDK() {
 }
 
 @Test
+func testCompatibleSwiftExecutablePathReplacesSwiftlyShimFor624StaticSDK() {
+    let path = compatibleSwiftExecutablePath(
+        swiftSDKArgument: "swift-6.2.4-RELEASE_static-linux-0.1.0",
+        environment: [
+            "HOME": "/Users/test",
+            "NANOCLAW_DEVCTL_SWIFT_BIN": "/var/folders/tmp/swiftly-abc123/bin/swift"
+        ],
+        isExecutableFile: { candidate in
+            candidate == "/var/folders/tmp/swiftly-abc123/bin/swift"
+                || candidate == "/Users/test/Library/Developer/Toolchains/swift-6.2.4-RELEASE.xctoolchain/usr/bin/swift"
+        }
+    )
+    #expect(path == "/Users/test/Library/Developer/Toolchains/swift-6.2.4-RELEASE.xctoolchain/usr/bin/swift")
+}
+
+@Test
 func testRetryClassifierMatchesKnownTransientBuildFailures() {
     #expect(shouldRetryStaticLinuxBuildFailure("Command timed out after 600s: swift build ..."))
     #expect(shouldRetryStaticLinuxBuildFailure("Assertion failed: (db_), function attachDB, file SQLiteBuildDB.cpp, line 125"))

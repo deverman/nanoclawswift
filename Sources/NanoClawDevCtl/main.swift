@@ -582,15 +582,45 @@ func compatibleSwiftExecutablePath(
     guard let swiftSDKArgument else { return preferred }
     let normalizedSDK = swiftSDKArgument.lowercased()
     let normalizedPreferred = preferred.lowercased()
+    if normalizedPreferred.contains("/swiftly-") {
+        if let candidate = pinnedSwiftExecutablePath(
+            matching: normalizedSDK,
+            environment: environment,
+            isExecutableFile: isExecutableFile
+        ) {
+            return candidate
+        }
+    }
     if normalizedSDK.contains("swift-6.2.3"),
        normalizedPreferred.contains("swift-6.2.4-release.xctoolchain") {
-        let home = environment["HOME"] ?? NSHomeDirectory()
-        let candidate = "\(home)/Library/Developer/Toolchains/swift-6.2.3-RELEASE.xctoolchain/usr/bin/swift"
-        if isExecutableFile(candidate) {
+        if let candidate = pinnedSwiftExecutablePath(
+            matching: normalizedSDK,
+            environment: environment,
+            isExecutableFile: isExecutableFile
+        ) {
             return candidate
         }
     }
     return preferred
+}
+
+private func pinnedSwiftExecutablePath(
+    matching normalizedSDK: String,
+    environment: [String: String],
+    isExecutableFile: (String) -> Bool
+) -> String? {
+    let home = environment["HOME"] ?? NSHomeDirectory()
+    let toolchain: String
+    if normalizedSDK.contains("swift-6.2.4") {
+        toolchain = "swift-6.2.4-RELEASE.xctoolchain"
+    } else if normalizedSDK.contains("swift-6.2.3") {
+        toolchain = "swift-6.2.3-RELEASE.xctoolchain"
+    } else {
+        return nil
+    }
+
+    let candidate = "\(home)/Library/Developer/Toolchains/\(toolchain)/usr/bin/swift"
+    return isExecutableFile(candidate) ? candidate : nil
 }
 
 func shouldRetryStaticLinuxBuildFailure(_ details: String) -> Bool {
