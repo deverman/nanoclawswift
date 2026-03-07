@@ -23,7 +23,9 @@ Production runtime is Swift-first:
    - `swift run nanoclaw-hostctl status`
 4. Telegram smoke succeeds with owner DM.
 5. No stale-doc CI violations from docs consistency guard.
-6. Required GitHub Actions workflows pass on the branch head before release, including Linux binary build validation.
+6. Required GitHub Actions workflows that are currently active pass on the branch head.
+   - Linux binary build validation remains active.
+   - Apple-container packaging CI is currently on hold pending non-interactive kernel bootstrap or a self-hosted Apple silicon runner.
 
 ## Go/No-Go Gate (Operator Checklist)
 
@@ -46,8 +48,9 @@ Mark each gate `pass` / `fail`:
 7. Rate-limit safety:
    - verify `NANOCLAW_PROVIDER_RPM_LIMIT` is set to a safe value for production load.
 8. GitHub Actions status:
-   - required workflows for the release branch head are green
-   - specifically include Linux binary build validation and the main CI workflow
+   - required active workflows for the release branch head are green
+   - Linux binary build validation remains required
+   - Apple-container packaging CI remains on hold until the bootstrap path is automatable
 
 Go decision:
 
@@ -63,9 +66,11 @@ Go decision:
 5. MCP runtime visibility in Telegram: `pass`
 6. Pagination UX: `pass`
 7. Rate-limit safety default: `pass`
-8. GitHub Actions status: `fail` (observed failing `Build Linux Binary (glibc)` workflow notification; must be fixed and re-run green)
-
-Current decision: `NO-GO` until scheduler/provider soak confidence is complete and required GitHub Actions workflows are green.
+8. GitHub Actions status: `partial`
+   - `Build Linux Binary (glibc)` is green
+   - Apple-container packaging CI is on hold because hosted `macos-26` runners require interactive default-kernel bootstrap after `container` installation
+   - local Apple-container packaging remains the validation path until CI support is resumed
+Current decision: `NO-GO` until scheduler/provider soak confidence is complete. Apple-container GitHub Actions packaging is tracked separately as an on-hold backlog item.
 
 ## Security Gates
 
@@ -117,7 +122,7 @@ Build/restart tuning:
 2. If host network/provider is unavailable, scheduled reports can be delayed.
 3. Host MCP bridge must be reachable for `runtime: "host"` MCP servers.
 4. Provider-side rate limits can still occur under sustained user bursts.
-5. A local deploy can look healthy while GitHub Actions Linux validation is still failing; release readiness requires both.
+5. A local deploy can look healthy while GitHub Actions Linux validation is still failing; keep Linux validation green even while Apple-container packaging CI is on hold.
 
 ## Triage Runbook
 

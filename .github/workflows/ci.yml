@@ -52,6 +52,7 @@ jobs:
         path: .build/release/nanoclaw-agent
         
   container-build:
+    if: ${{ vars.NANOCLAW_ENABLE_APPLE_CONTAINER_CI == 'true' }} # On hold pending non-interactive kernel bootstrap or self-hosted Apple silicon runner.
     runs-on: macos-26
     needs: build-and-test
     

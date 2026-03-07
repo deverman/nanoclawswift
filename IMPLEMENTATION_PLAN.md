@@ -318,14 +318,18 @@ This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, w
 3. Scheduled-report soak closure (`in progress`, narrowed scope to provider/network stability):
    - Apple and Swift scheduled tasks now both behave correctly at runtime
    - remaining soak blocker is general provider/network noise, not scheduler/task logic
-4. GitHub Actions reliability hardening (`new`, production blocker):
-   - observed failing GitHub Actions workflow notification for `Build Linux Binary (glibc)`
-   - treat green CI on the branch head as required before production GO
-   - next step: inspect workflow logs, fix the glibc build failure, and keep the workflow green across the latest scheduler/runtime commits
+4. GitHub Actions Apple-container packaging (`on hold`, backlog):
+   - hosted `macos-26` runner path now narrows to Apple `container` first-run kernel bootstrap, which prompts for user input and fails non-interactively
+   - signed Apple `container` package install works in CI, but `container system start` still blocks on default kernel setup
+   - keep this on hold until one of:
+     - a supported non-interactive kernel bootstrap path is identified, or
+     - Apple-container packaging moves to a self-hosted Apple silicon runner
+   - do not block local Telegram/runtime iteration on this item while it is on hold
 5. Production-readiness gate re-run and short go/no-go report:
    - rerun gate checklist with current Apple + Swift scheduled-task behavior
    - verify no new regressions in next soak window
-   - require GitHub Actions success for the release branch head
+   - keep Linux binary validation green on the branch head
+   - keep Apple-container GitHub Actions packaging as a backlog item until the hold above is cleared
 6. Serialized runtime update flow (`done`, standard path): `swift run nanoclaw-devctl rebuild-and-restart slim`.
 7. Swift-native dev build reliability hardening (`done 2026-02-19`, but still an operational pain point):
    - runtime-critical builds still hit static SDK cross-arch and transient network/submodule fetch failures
