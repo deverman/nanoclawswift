@@ -3,6 +3,8 @@ import Foundation
 import Logging
 
 struct HostEnvironmentConfig {
+    static let defaultProviderRPMLimit = 18
+
     static let containerPassthroughKeys: [String] = [
         "MODEL_PROVIDER",
         "MODEL_NAME",
@@ -44,6 +46,7 @@ struct HostEnvironmentConfig {
     let workingAckEnabled: Bool
     let workingAckThresholdMs: Int
     let workingAckRepeatIntervalMs: Int
+    let workingAckMaxUpdates: Int
     let latencyWindowSize: Int
     let latencySLOP50Ms: Int
     let latencySLOP95Ms: Int
@@ -51,7 +54,9 @@ struct HostEnvironmentConfig {
     let retryAlertRate: Double
     let sessionJanitorIntervalSec: Int
     let queueJobWatchdogMs: Int
+    let scheduledQueueJobWatchdogMs: Int
     let staleClaimReapAgeSec: Int
+    let scheduledNewsFreshnessWindowDays: Int
     let scheduledRetryMaxAttempts: Int
     let scheduledRetryInitialBackoffSec: Int
     let scheduledRetryMaxBackoffSec: Int
@@ -132,6 +137,7 @@ struct HostEnvironmentConfig {
                 passthrough[key] = value
             }
         }
+        applyDefaultProviderRPMLimitIfNeeded(passthrough: &passthrough)
 
         return HostEnvironmentConfig(
             containerImage: string("CONTAINER_IMAGE", "nanoclawswift-agent:slim"),
@@ -152,6 +158,7 @@ struct HostEnvironmentConfig {
             workingAckEnabled: parseEnabled(string("NANOCLAW_WORKING_ACK_ENABLED", "")),
             workingAckThresholdMs: int("NANOCLAW_WORKING_ACK_THRESHOLD_MS", 8000),
             workingAckRepeatIntervalMs: int("NANOCLAW_WORKING_ACK_REPEAT_INTERVAL_MS", 30000),
+            workingAckMaxUpdates: int("NANOCLAW_WORKING_ACK_MAX_UPDATES", 1),
             latencyWindowSize: int("NANOCLAW_LATENCY_WINDOW_SIZE", 200),
             latencySLOP50Ms: int("NANOCLAW_LATENCY_SLO_P50_MS", 15000),
             latencySLOP95Ms: int("NANOCLAW_LATENCY_SLO_P95_MS", 60000),
@@ -159,7 +166,9 @@ struct HostEnvironmentConfig {
             retryAlertRate: retryAlertRate,
             sessionJanitorIntervalSec: int("NANOCLAW_SESSION_JANITOR_INTERVAL_SEC", 30),
             queueJobWatchdogMs: int("NANOCLAW_QUEUE_JOB_WATCHDOG_MS", 295000),
+            scheduledQueueJobWatchdogMs: int("NANOCLAW_SCHEDULED_QUEUE_JOB_WATCHDOG_MS", 180000),
             staleClaimReapAgeSec: int("NANOCLAW_STALE_CLAIM_REAP_AGE_SEC", 180),
+            scheduledNewsFreshnessWindowDays: max(1, int("NANOCLAW_SCHEDULED_NEWS_FRESHNESS_DAYS", 7)),
             scheduledRetryMaxAttempts: int("NANOCLAW_SCHEDULED_RETRY_MAX_ATTEMPTS", 2),
             scheduledRetryInitialBackoffSec: int("NANOCLAW_SCHEDULED_RETRY_INITIAL_BACKOFF_SEC", 30),
             scheduledRetryMaxBackoffSec: int("NANOCLAW_SCHEDULED_RETRY_MAX_BACKOFF_SEC", 300),
@@ -185,5 +194,22 @@ struct HostEnvironmentConfig {
     private static func parseRate(_ parsed: Double, fallback: Double) -> Double {
         guard parsed >= 0 else { return fallback }
         return min(parsed, 1.0)
+    }
+
+    private static func applyDefaultProviderRPMLimitIfNeeded(passthrough: inout [String: String]) {
+        if let raw = passthrough["NANOCLAW_PROVIDER_RPM_LIMIT"],
+           let parsed = Int(raw),
+           parsed > 0 {
+            return
+        }
+
+        if let kimiRaw = passthrough["KIMI_RPM_LIMIT"],
+           let kimiParsed = Int(kimiRaw),
+           kimiParsed > 0 {
+            passthrough["NANOCLAW_PROVIDER_RPM_LIMIT"] = String(kimiParsed)
+            return
+        }
+
+        passthrough["NANOCLAW_PROVIDER_RPM_LIMIT"] = String(defaultProviderRPMLimit)
     }
 }

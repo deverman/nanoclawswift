@@ -258,6 +258,20 @@ private extension NanoClawAgentCLI {
         let startedAt = Date()
         let data = try Data(contentsOf: requestFile)
         let request = try JSONDecoder().decode(DaemonRequest.self, from: data)
+        let forcedScheduledToolPath = NanoClawAgent.shouldUseForcedScheduledToolPath(
+            for: request.prompt,
+            isScheduledTask: request.is_scheduled_task ?? false
+        )
+        let route = forcedScheduledToolPath
+            ? ExecutionRoute.toolCalling
+            : NanoClawAgent.executionRoute(
+                for: request.prompt,
+                isScheduledTask: request.is_scheduled_task ?? false
+            )
+        fputs(
+            "[agent-daemon] request=\(request.request_id) scheduled=\(request.is_scheduled_task ?? false) route=\(route.rawValue) forcedScheduledToolPath=\(forcedScheduledToolPath)\n",
+            stderr
+        )
 
         let agent = await cache.agent(for: request)
 

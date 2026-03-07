@@ -20,11 +20,21 @@ private struct MCPPaginationState: Sendable {
     let nextCursor: String
 }
 
+private struct MCPGenericPaginationState: Sendable {
+    let toolName: String
+    let baseArguments: [String: SendableValue]
+    let nextCursor: String
+}
+
 private struct MCPPaginationRecoveryOutcome: Sendable {
     let rawOutput: String
     let toolCall: ToolCall
     let toolResult: ToolResult
     let duration: Duration
+}
+
+private struct NaturalMoreCommand: Sendable {
+    let limitOverride: Int?
 }
 
 /// Main NanoClaw agent facade backed by Swarm ToolCallingAgent.
@@ -51,6 +61,7 @@ public actor NanoClawAgent: Agent {
     private let isScheduledTaskRun: Bool
     private let mcpRuntimeExecutor: MCPRuntimeExecutor?
     private var lastMCPHostCLIPagination: MCPPaginationState? = nil
+    private var lastMCPGenericPagination: MCPGenericPaginationState? = nil
     private var lastMCPHostCLIPaginationExhaustedNotice: String? = nil
 
     nonisolated static let swarmIterationCeiling: Int = 60
@@ -292,8 +303,69 @@ public actor NanoClawAgent: Agent {
     // MARK: - Agent Protocol Methods
 
     nonisolated public static func executionRoute(for input: String) -> ExecutionRoute {
-        _ = input
+        executionRoute(for: input, isScheduledTask: false)
+    }
+
+    nonisolated static func executionRoute(for input: String, isScheduledTask: Bool) -> ExecutionRoute {
+        if isScheduledTask, shouldForceToolCallingForScheduledPrompt(input) {
+            return .toolCalling
+        }
+        if shouldPreferToolCallingRoute(for: input) {
+            return .toolCalling
+        }
         return .planAndExecute
+    }
+
+    nonisolated private static func shouldPreferToolCallingRoute(for input: String) -> Bool {
+        let normalized = input.lowercased()
+        let mentionsMCPOrOmniFocus = normalized.contains("mcp")
+            || normalized.contains("omnifocus")
+            || normalized.contains("omni focus")
+            || normalized.contains("focusrelay")
+            || normalized.contains("focus relay")
+        guard mentionsMCPOrOmniFocus else {
+            return false
+        }
+        let asksForData = normalized.contains("inbox")
+            || normalized.contains("task")
+            || normalized.contains("tasks")
+            || normalized.contains("project")
+            || normalized.contains("projects")
+            || normalized.contains("show")
+            || normalized.contains("list")
+            || normalized.contains("what")
+        return asksForData
+    }
+
+    nonisolated private static func shouldForceToolCallingForScheduledPrompt(_ input: String) -> Bool {
+        let normalized = input.lowercased()
+        let scheduledReportMarkers = [
+            "report",
+            "digest",
+            "latest",
+            "today",
+            "news",
+            "headline",
+            "announcement",
+            "announcements",
+            "search"
+        ]
+        let liveDataDomains = [
+            "apple",
+            "swift",
+            "omnifocus",
+            "omni focus",
+            "focusrelay",
+            "focus relay",
+            "mcp"
+        ]
+        let mentionsLiveDomain = liveDataDomains.contains { normalized.contains($0) }
+        let looksLikeReport = scheduledReportMarkers.contains { normalized.contains($0) }
+        return mentionsLiveDomain && looksLikeReport
+    }
+
+    nonisolated static func shouldUseForcedScheduledToolPath(for input: String, isScheduledTask: Bool) -> Bool {
+        isScheduledTask && shouldForceToolCallingForScheduledPrompt(input)
     }
 
     nonisolated private static func slashCommandHelpText() -> String {
@@ -348,6 +420,29 @@ public actor NanoClawAgent: Agent {
         for input: String,
         availableToolNames: Set<String>
     ) async throws -> AgentResult? {
+        if let naturalMore = Self.naturalLanguageMoreCommand(from: input) {
+            guard availableToolNames.contains("mcp_host_cli") else {
+                return AgentResult(
+                    output: "Command /more is unavailable because mcp_host_cli is not loaded.",
+                    iterationCount: 1,
+                    metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
+                )
+            }
+            guard let explicit = paginationContinuationInvocation(
+                limitOverride: naturalMore.limitOverride,
+                availableToolNames: availableToolNames
+            ) else {
+                let message = lastMCPHostCLIPaginationExhaustedNotice
+                    ?? "No paginated MCP result is active yet. Run a paginated MCP command first, then use /more."
+                return AgentResult(
+                    output: message,
+                    iterationCount: 1,
+                    metadata: ["nanoclaw.explicit_tool_mode": .bool(true)]
+                )
+            }
+            return try await executeExplicitToolInvocation(explicit)
+        }
+
         switch SlashCommandParser.parse(input) {
         case .notCommand:
             return nil
@@ -462,6 +557,28 @@ public actor NanoClawAgent: Agent {
             }
             return try await executeExplicitToolInvocation(explicit)
         }
+    }
+
+    nonisolated private static func naturalLanguageMoreCommand(from input: String) -> NaturalMoreCommand? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let pattern = #"^show\s+more(?:\s+(\d+))?[.!?]?$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        guard let match = regex.firstMatch(in: trimmed, options: [], range: range),
+              match.range.location != NSNotFound else {
+            return nil
+        }
+
+        let limitRange = match.range(at: 1)
+        guard limitRange.location != NSNotFound,
+              let swiftRange = Range(limitRange, in: trimmed),
+              let parsed = Int(trimmed[swiftRange]),
+              parsed > 0 else {
+            return NaturalMoreCommand(limitOverride: nil)
+        }
+        return NaturalMoreCommand(limitOverride: parsed)
     }
 
     private func executeExplicitToolInvocation(_ explicit: ExplicitToolInvocation) async throws -> AgentResult {
@@ -591,7 +708,13 @@ public actor NanoClawAgent: Agent {
             )
         }
 
-        let route = Self.executionRoute(for: input)
+        let forceScheduledToolPath = Self.shouldUseForcedScheduledToolPath(
+            for: input,
+            isScheduledTask: isScheduledTaskRun
+        )
+        let route = forceScheduledToolPath
+            ? ExecutionRoute.toolCalling
+            : Self.executionRoute(for: input, isScheduledTask: isScheduledTaskRun)
         let loopBudget = Self.loopBudgetPolicy(
             for: route,
             timeoutSeconds: Self.timeoutSeconds(from: configuration.timeout),
@@ -613,6 +736,9 @@ public actor NanoClawAgent: Agent {
                         "attempt": .int(attempt)
                     ]
                 ) {
+                    if forceScheduledToolPath {
+                        return try await baseToolAgent.run(effectiveInput, session: session, hooks: hooks)
+                    }
                     switch route {
                     case .toolCalling:
                         return try await baseToolAgent.run(effectiveInput, session: session, hooks: hooks)
@@ -710,7 +836,7 @@ public actor NanoClawAgent: Agent {
                     groupFolder: groupFolder,
                     providerRoute: providerRoute,
                     pseudoToolRejected: true,
-                    executionRoute: route,
+                    executionRoute: forceScheduledToolPath ? .toolCalling : route,
                     attemptCount: attempt,
                     retryPolicy: retryPolicy,
                     loopBudget: loopBudget,
@@ -735,7 +861,7 @@ public actor NanoClawAgent: Agent {
                             groupFolder: groupFolder,
                             providerRoute: providerRoute,
                             pseudoToolRejected: false,
-                            executionRoute: route,
+                            executionRoute: forceScheduledToolPath ? .toolCalling : route,
                             attemptCount: attempt,
                             retryPolicy: retryPolicy,
                             loopBudget: loopBudget,
@@ -753,27 +879,39 @@ public actor NanoClawAgent: Agent {
         limitOverride: Int?,
         availableToolNames: Set<String>
     ) -> ExplicitToolInvocation? {
-        guard availableToolNames.contains("mcp_host_cli"),
-              let pagination = lastMCPHostCLIPagination else {
-            return nil
-        }
-
-        var args = pagination.baseArgs
-        if let overrideLimit = limitOverride {
-            args = Self.replacingOrAppendingFlag(
-                named: "--limit",
-                value: String(overrideLimit),
-                in: args
+        if availableToolNames.contains("mcp_host_cli"),
+           let pagination = lastMCPHostCLIPagination {
+            var args = pagination.baseArgs
+            if let overrideLimit = limitOverride {
+                args = Self.replacingOrAppendingFlag(
+                    named: "--limit",
+                    value: String(overrideLimit),
+                    in: args
+                )
+            }
+            args.append("--cursor")
+            args.append(pagination.nextCursor)
+            return ExplicitToolInvocation(
+                toolName: "mcp_host_cli",
+                arguments: [
+                    "server_id": .string(pagination.serverID),
+                    "args": .array(args.map { .string($0) })
+                ]
             )
         }
-        args.append("--cursor")
-        args.append(pagination.nextCursor)
+
+        guard let pagination = lastMCPGenericPagination,
+              availableToolNames.contains(pagination.toolName) else {
+            return nil
+        }
+        let arguments = Self.applyingGenericCursor(
+            pagination.nextCursor,
+            to: pagination.baseArguments,
+            limitOverride: limitOverride
+        )
         return ExplicitToolInvocation(
-            toolName: "mcp_host_cli",
-            arguments: [
-                "server_id": .string(pagination.serverID),
-                "args": .array(args.map { .string($0) })
-            ]
+            toolName: pagination.toolName,
+            arguments: arguments
         )
     }
 
@@ -782,43 +920,81 @@ public actor NanoClawAgent: Agent {
         arguments: [String: SendableValue],
         rawOutput: String
     ) async {
-        guard toolName == "mcp_host_cli" else { return }
-        guard let serverID = arguments["server_id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !serverID.isEmpty else {
-            lastMCPHostCLIPagination = nil
+        if toolName == "mcp_host_cli" {
+            guard let serverID = arguments["server_id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !serverID.isEmpty else {
+                lastMCPHostCLIPagination = nil
+                lastMCPHostCLIPaginationExhaustedNotice = nil
+                return
+            }
+            let args = arguments["args"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            let isCursorRequest = Self.containsCursorArgument(in: args)
+            let itemCount = Self.extractItemsCount(fromRawOutput: rawOutput) ?? -1
+            if isCursorRequest, itemCount == 0 {
+                lastMCPHostCLIPagination = nil
+                lastMCPHostCLIPaginationExhaustedNotice = "No additional items were returned for the next page. You’ve reached the end (or the cursor is stale)."
+                return
+            }
+
+            guard let nextCursor = Self.extractNextCursor(fromRawOutput: rawOutput) else {
+                lastMCPHostCLIPagination = nil
+                if itemCount >= 0 {
+                    if isCursorRequest {
+                        lastMCPHostCLIPaginationExhaustedNotice = "No additional items were returned for the next page. You’ve reached the end (or the cursor is stale)."
+                    } else {
+                        lastMCPHostCLIPaginationExhaustedNotice = "The latest MCP result has no next page. Run a new paginated command to continue browsing."
+                    }
+                } else {
+                    lastMCPHostCLIPaginationExhaustedNotice = nil
+                }
+                return
+            }
+
+            let baseArgs = Self.removingCursorArguments(from: args)
+            lastMCPHostCLIPagination = MCPPaginationState(
+                serverID: serverID,
+                baseArgs: baseArgs,
+                nextCursor: nextCursor
+            )
+            lastMCPGenericPagination = nil
             lastMCPHostCLIPaginationExhaustedNotice = nil
             return
         }
-        let args = arguments["args"]?.arrayValue?.compactMap(\.stringValue) ?? []
-        let isCursorRequest = Self.containsCursorArgument(in: args)
+
+        guard toolName.hasPrefix("mcp_") else { return }
+        let isCursorRequest = Self.genericCursorValue(in: arguments) != nil
         let itemCount = Self.extractItemsCount(fromRawOutput: rawOutput) ?? -1
         if isCursorRequest, itemCount == 0 {
-            lastMCPHostCLIPagination = nil
+            lastMCPGenericPagination = nil
             lastMCPHostCLIPaginationExhaustedNotice = "No additional items were returned for the next page. You’ve reached the end (or the cursor is stale)."
             return
         }
 
         guard let nextCursor = Self.extractNextCursor(fromRawOutput: rawOutput) else {
-            lastMCPHostCLIPagination = nil
-            if isCursorRequest, itemCount >= 0 {
-                lastMCPHostCLIPaginationExhaustedNotice = "No additional items were returned for the next page. You’ve reached the end (or the cursor is stale)."
+            lastMCPGenericPagination = nil
+            if itemCount >= 0 {
+                if isCursorRequest {
+                    lastMCPHostCLIPaginationExhaustedNotice = "No additional items were returned for the next page. You’ve reached the end (or the cursor is stale)."
+                } else {
+                    lastMCPHostCLIPaginationExhaustedNotice = "The latest MCP result has no next page. Run a new paginated command to continue browsing."
+                }
             } else {
                 lastMCPHostCLIPaginationExhaustedNotice = nil
             }
             return
         }
 
-        let baseArgs = Self.removingCursorArguments(from: args)
-        lastMCPHostCLIPagination = MCPPaginationState(
-            serverID: serverID,
-            baseArgs: baseArgs,
+        lastMCPGenericPagination = MCPGenericPaginationState(
+            toolName: toolName,
+            baseArguments: Self.removingGenericCursor(from: arguments),
             nextCursor: nextCursor
         )
+        lastMCPHostCLIPagination = nil
         lastMCPHostCLIPaginationExhaustedNotice = nil
     }
 
     private func updateMCPPaginationState(from result: AgentResult) async {
-        guard let call = result.toolCalls.last(where: { $0.toolName == "mcp_host_cli" }),
+        guard let call = result.toolCalls.last(where: { $0.toolName.hasPrefix("mcp_") }),
               let toolResult = result.toolResults.last(where: { $0.callId == call.id && $0.isSuccess }) else {
             return
         }
@@ -831,8 +1007,9 @@ public actor NanoClawAgent: Agent {
     }
 
     private func clearMCPPaginationStateIfNeeded(for toolName: String) async {
-        guard toolName == "mcp_host_cli" else { return }
+        guard toolName.hasPrefix("mcp_") else { return }
         lastMCPHostCLIPagination = nil
+        lastMCPGenericPagination = nil
         lastMCPHostCLIPaginationExhaustedNotice = nil
     }
 
@@ -1342,7 +1519,7 @@ public actor NanoClawAgent: Agent {
         rawOutput: String,
         renderedOutput: String
     ) -> String {
-        guard toolName == "mcp_host_cli",
+        guard toolName.hasPrefix("mcp_"),
               let nextCursor = extractNextCursor(fromRawOutput: rawOutput) else {
             return renderedOutput
         }
@@ -1361,8 +1538,19 @@ public actor NanoClawAgent: Agent {
             return renderedOutput
         }
         let args = arguments["args"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let itemCount = extractItemsCount(fromRawOutput: rawOutput)
+        if !containsCursorArgument(in: args),
+           itemCount == 0,
+           args.contains("list-tasks") {
+            return """
+            No items were returned for this `list-tasks` view.
+            Try one of:
+            - `/mcp-cli focusrelay list-tasks --project-view all --limit 50`
+            - `/mcp-cli focusrelay list-tasks --inbox-only true --inbox-view everything --limit 50`
+            """
+        }
         guard containsCursorArgument(in: args),
-              let itemCount = extractItemsCount(fromRawOutput: rawOutput),
+              let itemCount,
               itemCount == 0 else {
             return renderedOutput
         }
@@ -1457,6 +1645,55 @@ public actor NanoClawAgent: Agent {
             return nil
         }
         return json
+    }
+
+    nonisolated private static func genericCursorValue(
+        in arguments: [String: SendableValue]
+    ) -> String? {
+        if let cursor = arguments["cursor"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !cursor.isEmpty {
+            return cursor
+        }
+        if let cursorInt = arguments["cursor"]?.intValue {
+            return String(cursorInt)
+        }
+        if let page = arguments["page"]?.dictionaryValue {
+            if let cursor = page["cursor"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !cursor.isEmpty {
+                return cursor
+            }
+            if let cursorInt = page["cursor"]?.intValue {
+                return String(cursorInt)
+            }
+        }
+        return nil
+    }
+
+    nonisolated private static func removingGenericCursor(
+        from arguments: [String: SendableValue]
+    ) -> [String: SendableValue] {
+        var updated = arguments
+        updated.removeValue(forKey: "cursor")
+        if var page = updated["page"]?.dictionaryValue {
+            page.removeValue(forKey: "cursor")
+            updated["page"] = .dictionary(page)
+        }
+        return updated
+    }
+
+    nonisolated private static func applyingGenericCursor(
+        _ cursor: String,
+        to baseArguments: [String: SendableValue],
+        limitOverride: Int?
+    ) -> [String: SendableValue] {
+        var updated = baseArguments
+        var page = updated["page"]?.dictionaryValue ?? [:]
+        page["cursor"] = .string(cursor)
+        if let limitOverride, limitOverride > 0 {
+            page["limit"] = .int(limitOverride)
+        }
+        updated["page"] = .dictionary(page)
+        return updated
     }
 
     nonisolated private static func renderMCPJSONValue(_ value: Any) -> String? {

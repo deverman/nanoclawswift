@@ -1,6 +1,6 @@
 # Production Readiness
 
-Updated: 2026-02-19
+Updated: 2026-03-06
 
 ## Runtime Baseline
 
@@ -26,7 +26,7 @@ Production runtime is Swift-first:
 
 ## Go/No-Go Gate (Operator Checklist)
 
-Mark each gate `pass` / `fail` with evidence:
+Mark each gate `pass` / `fail`:
 
 1. Build + restart reliability (`pass` requires one clean serialized run):
    - `swift run nanoclaw-devctl rebuild-and-restart slim`
@@ -49,6 +49,18 @@ Go decision:
 
 - `GO` if all gates pass.
 - `NO-GO` if any gate fails; capture blocker + owner in `IMPLEMENTATION_PLAN.md`.
+
+## Current Gate Status (2026-03-06)
+
+1. Build + restart reliability: `pass`
+2. Host health: `pass`
+3. Scheduler diagnostics and due-task visibility: `partial` (Apple and Swift scheduled tasks now stable; provider/network soak confidence still needed)
+4. Scheduled task DB status: `pass`
+5. MCP runtime visibility in Telegram: `pass`
+6. Pagination UX: `pass`
+7. Rate-limit safety default: `pass`
+
+Current decision: `NO-GO` until scheduler/provider soak confidence is complete.
 
 ## Security Gates
 
@@ -132,5 +144,7 @@ Build/restart tuning:
 - Memory/parity tools: ready
 - Attachment send path: ready (live smoke still recommended)
 - MCP runtime wiring: ready in startup path (container + host bridge)
+- Scheduled Swift tip runtime: ready with targeted-source fallback and explicit no-fresh-results branch
+- Scheduled Apple report runtime: ready with targeted-source prompt and dated-source output
 - Multi-channel: intentionally deferred
-- Pending before final production go/no-go: complete next scheduler soak cycle evidence and re-run gate checklist
+- Pending before final production go/no-go: complete another scheduler/provider soak cycle and re-run the gate checklist

@@ -67,6 +67,7 @@ func testHostEnvironmentConfigUsesDefaultsWhenUnsetOrInvalid() {
     #expect(config.workingAckEnabled == true)
     #expect(config.workingAckThresholdMs == 8000)
     #expect(config.workingAckRepeatIntervalMs == 30000)
+    #expect(config.workingAckMaxUpdates == 1)
     #expect(config.latencyWindowSize == 200)
     #expect(config.latencySLOP50Ms == 15000)
     #expect(config.latencySLOP95Ms == 60000)
@@ -74,7 +75,9 @@ func testHostEnvironmentConfigUsesDefaultsWhenUnsetOrInvalid() {
     #expect(config.retryAlertRate == 0.02)
     #expect(config.sessionJanitorIntervalSec == 30)
     #expect(config.queueJobWatchdogMs == 295000)
+    #expect(config.scheduledQueueJobWatchdogMs == 180000)
     #expect(config.staleClaimReapAgeSec == 180)
+    #expect(config.scheduledNewsFreshnessWindowDays == 7)
     #expect(config.scheduledRetryMaxAttempts == 2)
     #expect(config.scheduledRetryInitialBackoffSec == 30)
     #expect(config.scheduledRetryMaxBackoffSec == 300)
@@ -82,6 +85,7 @@ func testHostEnvironmentConfigUsesDefaultsWhenUnsetOrInvalid() {
     #expect(config.telegramTypingStartDelayMs == 1500)
     #expect(config.focusRelayEnabled == true)
     #expect(config.focusRelayCommand == "/opt/homebrew/bin/focusrelay")
+    #expect(config.containerPassthroughEnvironment["NANOCLAW_PROVIDER_RPM_LIMIT"] == "18")
 }
 
 @Test
@@ -99,6 +103,7 @@ func testHostEnvironmentConfigLoadsHostRuntimeServiceAndContainerPassthroughValu
             "NANOCLAW_WORKING_ACK_ENABLED": "0",
             "NANOCLAW_WORKING_ACK_THRESHOLD_MS": "4200",
             "NANOCLAW_WORKING_ACK_REPEAT_INTERVAL_MS": "15000",
+            "NANOCLAW_WORKING_ACK_MAX_UPDATES": "2",
             "NANOCLAW_LATENCY_WINDOW_SIZE": "123",
             "NANOCLAW_LATENCY_SLO_P50_MS": "17000",
             "NANOCLAW_LATENCY_SLO_P95_MS": "92000",
@@ -106,7 +111,9 @@ func testHostEnvironmentConfigLoadsHostRuntimeServiceAndContainerPassthroughValu
             "NANOCLAW_RETRY_ALERT_RATE": "0.15",
             "NANOCLAW_SESSION_JANITOR_INTERVAL_SEC": "45",
             "NANOCLAW_QUEUE_JOB_WATCHDOG_MS": "90000",
+            "NANOCLAW_SCHEDULED_QUEUE_JOB_WATCHDOG_MS": "75000",
             "NANOCLAW_STALE_CLAIM_REAP_AGE_SEC": "240",
+            "NANOCLAW_SCHEDULED_NEWS_FRESHNESS_DAYS": "5",
             "NANOCLAW_SCHEDULED_RETRY_MAX_ATTEMPTS": "4",
             "NANOCLAW_SCHEDULED_RETRY_INITIAL_BACKOFF_SEC": "12",
             "NANOCLAW_SCHEDULED_RETRY_MAX_BACKOFF_SEC": "144",
@@ -141,6 +148,7 @@ func testHostEnvironmentConfigLoadsHostRuntimeServiceAndContainerPassthroughValu
     #expect(config.workingAckEnabled == false)
     #expect(config.workingAckThresholdMs == 4200)
     #expect(config.workingAckRepeatIntervalMs == 15000)
+    #expect(config.workingAckMaxUpdates == 2)
     #expect(config.latencyWindowSize == 123)
     #expect(config.latencySLOP50Ms == 17000)
     #expect(config.latencySLOP95Ms == 92000)
@@ -148,7 +156,9 @@ func testHostEnvironmentConfigLoadsHostRuntimeServiceAndContainerPassthroughValu
     #expect(config.retryAlertRate == 0.15)
     #expect(config.sessionJanitorIntervalSec == 45)
     #expect(config.queueJobWatchdogMs == 90000)
+    #expect(config.scheduledQueueJobWatchdogMs == 75000)
     #expect(config.staleClaimReapAgeSec == 240)
+    #expect(config.scheduledNewsFreshnessWindowDays == 5)
     #expect(config.scheduledRetryMaxAttempts == 4)
     #expect(config.scheduledRetryInitialBackoffSec == 12)
     #expect(config.scheduledRetryMaxBackoffSec == 144)
@@ -169,6 +179,18 @@ func testHostEnvironmentConfigLoadsHostRuntimeServiceAndContainerPassthroughValu
     #expect(config.containerPassthroughEnvironment["NANOCLAW_WEB_BROKER_URL"] == "http://127.0.0.1:8080")
     #expect(config.containerPassthroughEnvironment["NANOCLAW_FOCUSRELAY_BROKER_URL"] == "http://127.0.0.1:8080/focusrelay")
     #expect(config.containerPassthroughEnvironment["NANOCLAW_MCP_HOST_BROKER_URL"] == "http://127.0.0.1:8080/mcp/host")
+}
+
+@Test
+func testHostEnvironmentConfigBackfillsProviderRPMLimitFromKimiLimit() {
+    let config = HostEnvironmentConfig.load(
+        from: [
+            "KIMI_RPM_LIMIT": "7",
+        ]
+    )
+
+    #expect(config.containerPassthroughEnvironment["KIMI_RPM_LIMIT"] == "7")
+    #expect(config.containerPassthroughEnvironment["NANOCLAW_PROVIDER_RPM_LIMIT"] == "7")
 }
 
 @Test

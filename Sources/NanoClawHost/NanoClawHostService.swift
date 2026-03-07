@@ -30,11 +30,13 @@ actor NanoClawHostService {
     private let workingAckEnabled: Bool
     private let workingAckThresholdMs: Int
     private let workingAckRepeatIntervalMs: Int
+    private let workingAckMaxUpdates: Int
     private let latencyWindowSize: Int
     private let latencySLOP50Ms: Int
     private let latencySLOP95Ms: Int
     private let timeoutAlertRate: Double
     private let retryAlertRate: Double
+    private let scheduledNewsFreshnessWindowDays: Int
     private let scheduledRetryMaxAttempts: Int
     private let scheduledRetryInitialBackoffSec: Int
     private let scheduledRetryMaxBackoffSec: Int
@@ -99,6 +101,10 @@ actor NanoClawHostService {
             5000,
             hostEnvironment.workingAckRepeatIntervalMs
         )
+        self.workingAckMaxUpdates = max(
+            1,
+            hostEnvironment.workingAckMaxUpdates
+        )
         self.latencyWindowSize = max(
             20,
             hostEnvironment.latencyWindowSize
@@ -114,6 +120,7 @@ actor NanoClawHostService {
         )
         self.timeoutAlertRate = hostEnvironment.timeoutAlertRate
         self.retryAlertRate = hostEnvironment.retryAlertRate
+        self.scheduledNewsFreshnessWindowDays = max(1, hostEnvironment.scheduledNewsFreshnessWindowDays)
         self.scheduledRetryMaxAttempts = max(0, hostEnvironment.scheduledRetryMaxAttempts)
         self.scheduledRetryInitialBackoffSec = max(1, hostEnvironment.scheduledRetryInitialBackoffSec)
         self.scheduledRetryMaxBackoffSec = max(
@@ -461,8 +468,29 @@ actor NanoClawHostService {
             toolCallsCount = response.tool_calls_count
             agentDurationMs = response.duration_ms
 
+            var normalizedResponse = response
+            let rawResult = response.result?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let responseToolCalls = response.tool_calls_count ?? 0
+            if response.status == "success",
+               !rawResult.isEmpty,
+               responseToolCalls == 0,
+               Self.containsPseudoToolOutput(rawResult) {
+                logger.warning(
+                    "Run returned pseudo tool output; coercing to error request=\(job.requestID) scheduled=\(job.isScheduledTask)"
+                )
+                normalizedResponse = ContainerResponsePayload(
+                    request_id: response.request_id,
+                    status: "error",
+                    result: nil,
+                    new_session_id: response.new_session_id,
+                    error: "Model returned pseudo tool syntax without structured tool calls.",
+                    tool_calls_count: response.tool_calls_count,
+                    duration_ms: response.duration_ms
+                )
+            }
+
             let sessionPersistStart = Date()
-            if let newSessionID = response.new_session_id, !newSessionID.isEmpty {
+            if let newSessionID = normalizedResponse.new_session_id, !newSessionID.isEmpty {
                 try store.upsertSession(scopeKey: job.group.folder, sessionID: newSessionID)
             }
             sessionPersistMs = elapsedMs(since: sessionPersistStart)
@@ -472,24 +500,149 @@ actor NanoClawHostService {
             ipcMs = elapsedMs(since: ipcStart)
 
             if job.isScheduledTask {
-                try await finalizeScheduledTask(job: job, response: response, startedAt: startedAt)
+                var scheduledResponse = normalizedResponse
+                let originalPayload = payload
+                let scheduledPrompt = job.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                let rawScheduledResult = normalizedResponse.result?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if normalizedResponse.status == "success",
+                   !rawScheduledResult.isEmpty,
+                   Self.containsPseudoToolOutput(rawScheduledResult) {
+                    logger.warning(
+                        "Scheduled run returned pseudo tool output; coercing to error request=\(job.requestID) taskID=\(job.scheduledTaskID ?? "unknown")"
+                    )
+                    scheduledResponse = ContainerResponsePayload(
+                        request_id: normalizedResponse.request_id,
+                        status: "error",
+                        result: nil,
+                        new_session_id: normalizedResponse.new_session_id,
+                        error: "Model returned pseudo tool syntax without structured tool calls.",
+                        tool_calls_count: normalizedResponse.tool_calls_count,
+                        duration_ms: normalizedResponse.duration_ms
+                    )
+                }
+                let scheduledToolCalls = scheduledResponse.tool_calls_count ?? 0
+                if scheduledResponse.status == "success",
+                   scheduledToolCalls == 0,
+                   Self.scheduledPromptRequiresToolExecution(scheduledPrompt) {
+                    logger.warning(
+                        "Scheduled run required tool execution but returned zero tool calls; coercing to error request=\(job.requestID) taskID=\(job.scheduledTaskID ?? "unknown")"
+                    )
+                    scheduledResponse = ContainerResponsePayload(
+                        request_id: scheduledResponse.request_id,
+                        status: "error",
+                        result: nil,
+                        new_session_id: scheduledResponse.new_session_id,
+                        error: "Scheduled run required tool execution, but the model returned no structured tool calls.",
+                        tool_calls_count: scheduledResponse.tool_calls_count,
+                        duration_ms: scheduledResponse.duration_ms
+                    )
+                }
+                if scheduledResponse.status == "success",
+                   let freshnessFailure = Self.scheduledNewsFreshnessFailure(
+                       prompt: scheduledPrompt,
+                       result: scheduledResponse.result,
+                       freshnessWindowDays: scheduledNewsFreshnessWindowDays,
+                       now: Date()
+                   ) {
+                    logger.warning(
+                        "Scheduled run failed freshness gate request=\(job.requestID) taskID=\(job.scheduledTaskID ?? "unknown") reason=\(freshnessFailure)"
+                    )
+                    scheduledResponse = ContainerResponsePayload(
+                        request_id: scheduledResponse.request_id,
+                        status: "error",
+                        result: nil,
+                        new_session_id: scheduledResponse.new_session_id,
+                        error: freshnessFailure,
+                        tool_calls_count: scheduledResponse.tool_calls_count,
+                        duration_ms: scheduledResponse.duration_ms
+                    )
+                }
+                if Self.shouldAttemptScheduledToolRecovery(
+                    prompt: scheduledPrompt,
+                    response: scheduledResponse
+                ) {
+                    logger.warning(
+                        "Scheduled run entering one-shot tool recovery request=\(job.requestID) taskID=\(job.scheduledTaskID ?? "unknown")"
+                    )
+                    let recoveryStart = Date()
+                    let recoveryResponse = try await runContainerRequestWithWatchdog(
+                        group: job.group,
+                        payload: Self.scheduledToolRecoveryPayload(
+                            from: originalPayload,
+                            originalPrompt: scheduledPrompt
+                        )
+                    )
+                    containerMs = (containerMs ?? 0) + elapsedMs(since: recoveryStart)
+                    toolCallsCount = recoveryResponse.tool_calls_count
+                    agentDurationMs = recoveryResponse.duration_ms
+                    scheduledResponse = Self.normalizedScheduledRecoveryResponse(from: recoveryResponse)
+                }
+                let trimmedResult = scheduledResponse.result?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let hasDirectResult = !trimmedResult.isEmpty
+                let toolCalls = scheduledResponse.tool_calls_count ?? 0
+                let shouldFallbackDirectResult =
+                    scheduledResponse.status == "success"
+                    && hasDirectResult
+                    && (
+                        ipcOutcome.outboundMessagesFromIPC == 0
+                            || toolCalls == 0
+                    )
+                logger.info(
+                    "Scheduled delivery decision request=\(job.requestID) status=\(scheduledResponse.status) hasDirectResult=\(hasDirectResult) ipcOutbound=\(ipcOutcome.outboundMessagesFromIPC) toolCalls=\(toolCalls) fallback=\(shouldFallbackDirectResult)"
+                )
+                if shouldFallbackDirectResult {
+                    let chunks = splitAssistantOutboundText(
+                        trimmedResult,
+                        assistantName: assistantName,
+                        for: job.channel
+                    )
+                    for chunk in chunks where !chunk.isEmpty {
+                        _ = try store.enqueueOutbound(
+                            channel: job.channel,
+                            chatJID: job.chatJID,
+                            text: chunk
+                        )
+                    }
+                    logger.info(
+                        "Scheduled run enqueued fallback direct result request=\(job.requestID) chat=\(job.chatJID)"
+                    )
+                }
+                try await finalizeScheduledTask(job: job, response: scheduledResponse, startedAt: startedAt)
                 let totalMs = elapsedMs(since: startedAt)
                 let scheduledCause = ScheduledRunFailureClassifier.classify(
-                    status: response.status,
-                    detail: response.error
+                    status: scheduledResponse.status,
+                    detail: scheduledResponse.error
                 )
                 logger.info(
-                    "Completed scheduled queue job request=\(job.requestID) group=\(job.group.folder) status=\(response.status) cause=\(scheduledCause?.rawValue ?? "none") transient=\(ScheduledRunFailureClassifier.isTransient(scheduledCause)) totalMs=\(totalMs) queueWaitMs=\(queueWaitMs) snapshotMs=\(snapshotMs ?? -1) sessionLoadMs=\(sessionLoadMs ?? -1) containerMs=\(containerMs ?? -1) sessionPersistMs=\(sessionPersistMs ?? -1) ipcMs=\(ipcMs ?? -1) toolCalls=\(toolCallsCount ?? -1) agentDurationMs=\(agentDurationMs ?? -1)"
+                    "Completed scheduled queue job request=\(job.requestID) group=\(job.group.folder) status=\(scheduledResponse.status) cause=\(scheduledCause?.rawValue ?? "none") transient=\(ScheduledRunFailureClassifier.isTransient(scheduledCause)) totalMs=\(totalMs) queueWaitMs=\(queueWaitMs) snapshotMs=\(snapshotMs ?? -1) sessionLoadMs=\(sessionLoadMs ?? -1) containerMs=\(containerMs ?? -1) sessionPersistMs=\(sessionPersistMs ?? -1) ipcMs=\(ipcMs ?? -1) toolCalls=\(toolCallsCount ?? -1) agentDurationMs=\(agentDurationMs ?? -1)"
                 )
                 return
             }
 
+            let interactiveToolCalls = normalizedResponse.tool_calls_count ?? 0
+            if normalizedResponse.status == "success",
+               interactiveToolCalls == 0,
+               Self.interactivePromptRequiresToolExecution(job.content) {
+                logger.warning(
+                    "Interactive run required tool execution but returned zero tool calls; coercing to error request=\(job.requestID) chat=\(job.chatJID)"
+                )
+                normalizedResponse = ContainerResponsePayload(
+                    request_id: normalizedResponse.request_id,
+                    status: "error",
+                    result: nil,
+                    new_session_id: normalizedResponse.new_session_id,
+                    error: "This request requires live tool access (OmniFocus/MCP), but the model returned no structured tool calls. Please retry with /mcp-cli or ask me again and I will run the tool directly.",
+                    tool_calls_count: normalizedResponse.tool_calls_count,
+                    duration_ms: normalizedResponse.duration_ms
+                )
+            }
+
             let outboundStart = Date()
             if Self.shouldEnqueueDirectResult(
-                status: response.status,
-                result: response.result,
+                status: normalizedResponse.status,
+                result: normalizedResponse.result,
                 ipcOutboundCount: ipcOutcome.outboundMessagesFromIPC
-            ), let result = response.result?.trimmingCharacters(in: .whitespacesAndNewlines), !result.isEmpty {
+            ), let result = normalizedResponse.result?.trimmingCharacters(in: .whitespacesAndNewlines), !result.isEmpty {
                 let chunks = splitAssistantOutboundText(
                     result,
                     assistantName: assistantName,
@@ -502,12 +655,12 @@ actor NanoClawHostService {
                         text: chunk
                     )
                 }
-            } else if response.status == "success",
+            } else if normalizedResponse.status == "success",
                       ipcOutcome.outboundMessagesFromIPC > 0 {
                 logger.info(
                     "Suppressed direct agent result because IPC outbound messages were emitted request=\(job.requestID) count=\(ipcOutcome.outboundMessagesFromIPC)"
                 )
-            } else if response.status == "success" {
+            } else if normalizedResponse.status == "success" {
                 let fallback = "I finished processing your request, but I couldn’t produce a reply. Please try again."
                 let chunks = splitAssistantOutboundText(
                     fallback,
@@ -521,7 +674,7 @@ actor NanoClawHostService {
                         text: chunk
                     )
                 }
-            } else if let error = response.error {
+            } else if let error = normalizedResponse.error {
                 let chunks = splitAssistantOutboundText(
                     error,
                     assistantName: assistantName,
@@ -540,7 +693,7 @@ actor NanoClawHostService {
             let totalMs = elapsedMs(since: startedAt)
             recordLatency(totalMs: totalMs, timedOut: isTimeoutLike(response.error))
             logger.info(
-                "Completed queue job request=\(job.requestID) group=\(job.group.folder) status=\(response.status) totalMs=\(totalMs) queueWaitMs=\(queueWaitMs) snapshotMs=\(snapshotMs ?? -1) sessionLoadMs=\(sessionLoadMs ?? -1) containerMs=\(containerMs ?? -1) sessionPersistMs=\(sessionPersistMs ?? -1) ipcMs=\(ipcMs ?? -1) outboundMs=\(outboundMs ?? -1) toolCalls=\(toolCallsCount ?? -1) agentDurationMs=\(agentDurationMs ?? -1)"
+                "Completed queue job request=\(job.requestID) group=\(job.group.folder) status=\(normalizedResponse.status) totalMs=\(totalMs) queueWaitMs=\(queueWaitMs) snapshotMs=\(snapshotMs ?? -1) sessionLoadMs=\(sessionLoadMs ?? -1) containerMs=\(containerMs ?? -1) sessionPersistMs=\(sessionPersistMs ?? -1) ipcMs=\(ipcMs ?? -1) outboundMs=\(outboundMs ?? -1) toolCalls=\(toolCallsCount ?? -1) agentDurationMs=\(agentDurationMs ?? -1)"
             )
         } catch {
             let totalMs = elapsedMs(since: startedAt)
@@ -634,8 +787,11 @@ actor NanoClawHostService {
     ) async throws -> ContainerResponsePayload {
         let manager = sessionManager
         let containerTimeoutMs = runtimeConfig.containerTimeoutMs
+        let requestedWatchdogMs = payload.is_scheduled_task
+            ? runtimeConfig.scheduledQueueJobWatchdogMs
+            : runtimeConfig.queueJobWatchdogMs
         let watchdogMs = Self.effectiveWatchdogMs(
-            requestedWatchdogMs: runtimeConfig.queueJobWatchdogMs,
+            requestedWatchdogMs: requestedWatchdogMs,
             containerTimeoutMs: containerTimeoutMs
         )
 
@@ -652,7 +808,9 @@ actor NanoClawHostService {
                 self.logger.error(
                     "Queue watchdog timed out request=\(payload.request_id) group=\(group.folder) watchdogMs=\(watchdogMs) containerTimeoutMs=\(containerTimeoutMs)"
                 )
-                await manager.recycleSession(for: group.folder)
+                Task {
+                    await manager.recycleSession(for: group.folder)
+                }
                 throw ContainerSessionError.requestTimedOut(
                     message: "Queue watchdog timed out after \(watchdogMs)ms for request \(payload.request_id)"
                 )
@@ -739,6 +897,303 @@ actor NanoClawHostService {
         return ipcOutboundCount == 0
     }
 
+    static func containsPseudoToolOutput(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if trimmed.range(of: #"`{3}\s*tool"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        if trimmed.range(of: #"`{3}\s*functions?(?:\.[\w.-]+)?(?::\d+)?\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        if trimmed.range(
+            of: #"<\s*function[_-]?calls\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil {
+            return true
+        }
+        if trimmed.range(
+            of: #"<\s*invoke\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil {
+            return true
+        }
+        return false
+    }
+
+    static func scheduledPromptRequiresToolExecution(_ prompt: String) -> Bool {
+        let normalized = prompt.lowercased()
+        let reportMarkers = [
+            "daily omnifocus priority report",
+            "apple news digest",
+            "swift programming tips",
+            "report",
+            "digest",
+            "latest",
+            "today",
+            "news",
+            "search",
+            "query omni"
+        ]
+        return reportMarkers.contains(where: { normalized.contains($0) })
+    }
+
+    static func shouldAttemptScheduledToolRecovery(
+        prompt: String,
+        response: ContainerResponsePayload
+    ) -> Bool {
+        guard scheduledPromptRequiresToolExecution(prompt) else { return false }
+        let cause = ScheduledRunFailureClassifier.classify(
+            status: response.status,
+            detail: response.error
+        )
+        switch cause {
+        case .missingToolCalls, .toolError:
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func scheduledToolRecoveryPayload(
+        from payload: ContainerRequestPayload,
+        originalPrompt: String
+    ) -> ContainerRequestPayload {
+        ContainerRequestPayload(
+            request_id: payload.request_id + "-tool-recovery",
+            prompt: scheduledToolRecoveryPrompt(from: originalPrompt),
+            session_id: payload.session_id,
+            chat_jid: payload.chat_jid,
+            group_folder: payload.group_folder,
+            is_main: payload.is_main,
+            is_scheduled_task: payload.is_scheduled_task
+        )
+    }
+
+    static func scheduledToolRecoveryPrompt(from originalPrompt: String) -> String {
+        """
+        \(originalPrompt)
+
+        Critical execution requirement:
+        - Use structured tool calls only for any live data, search, web, MCP, or OmniFocus access.
+        - Do not describe tool calls, do not emit pseudo-tool syntax, and do not answer from memory.
+        - If fresh live data cannot be retrieved, return a concise failure explaining which required tool call failed.
+        """
+    }
+
+    static func normalizedScheduledRecoveryResponse(from response: ContainerResponsePayload) -> ContainerResponsePayload {
+        let trimmedResult = response.result?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if response.status == "success",
+           !trimmedResult.isEmpty,
+           (response.tool_calls_count ?? 0) == 0,
+           containsPseudoToolOutput(trimmedResult) {
+            return ContainerResponsePayload(
+                request_id: response.request_id,
+                status: "error",
+                result: nil,
+                new_session_id: response.new_session_id,
+                error: "Model returned pseudo tool syntax without structured tool calls.",
+                tool_calls_count: response.tool_calls_count,
+                duration_ms: response.duration_ms
+            )
+        }
+        if response.status == "success",
+           (response.tool_calls_count ?? 0) == 0 {
+            return ContainerResponsePayload(
+                request_id: response.request_id,
+                status: "error",
+                result: nil,
+                new_session_id: response.new_session_id,
+                error: "Scheduled run required tool execution, but the model returned no structured tool calls.",
+                tool_calls_count: response.tool_calls_count,
+                duration_ms: response.duration_ms
+            )
+        }
+        return response
+    }
+
+    static func scheduledPromptRequiresFreshNewsSources(_ prompt: String) -> Bool {
+        let normalized = prompt.lowercased()
+        let newsMarkers = [
+            "news",
+            "tip",
+            "headline",
+            "digest",
+            "announcements",
+            "launch",
+            "latest updates",
+            "what happened today",
+            "nothing fresh",
+            "published within the last"
+        ]
+        let domainMarkers = [
+            "apple",
+            "swift"
+        ]
+        return newsMarkers.contains { normalized.contains($0) }
+            || (domainMarkers.contains { normalized.contains($0) } && normalized.contains("latest"))
+    }
+
+    static func scheduledNewsFreshnessFailure(
+        prompt: String,
+        result: String?,
+        freshnessWindowDays: Int,
+        now: Date
+    ) -> String? {
+        guard scheduledPromptRequiresFreshNewsSources(prompt) else { return nil }
+        let safeWindowDays = max(1, freshnessWindowDays)
+        let maxAllowedWindowDays = max(
+            safeWindowDays,
+            fallbackFreshnessWindowDays(from: prompt) ?? safeWindowDays
+        )
+        let trimmedResult = result?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedResult.isEmpty else {
+            return "Scheduled news freshness check failed: empty report payload."
+        }
+        let dateReferences = extractDateReferencesForFreshnessCheck(from: trimmedResult)
+        guard !dateReferences.isEmpty else {
+            return "Scheduled news freshness check failed: missing dated sources in the report output."
+        }
+        let calendar = Calendar(identifier: .gregorian)
+        let freshThreshold = calendar.date(byAdding: .day, value: -safeWindowDays, to: now) ?? now
+        let maxAllowedThreshold = calendar.date(byAdding: .day, value: -maxAllowedWindowDays, to: now) ?? now
+        let hasTooOldDate = dateReferences.contains { referencedDate in
+            referencedDate < maxAllowedThreshold
+        }
+        if hasTooOldDate {
+            return "Scheduled news freshness check failed: one or more cited source dates are older than \(maxAllowedWindowDays) days."
+        }
+        let hasFreshDate = dateReferences.contains { referencedDate in
+            referencedDate >= freshThreshold
+        }
+        if hasFreshDate {
+            return nil
+        }
+        if maxAllowedWindowDays > safeWindowDays {
+            return nil
+        }
+        return "Scheduled news freshness check failed: all cited source dates are older than \(safeWindowDays) days."
+    }
+
+    static func fallbackFreshnessWindowDays(from prompt: String) -> Int? {
+        let lower = prompt.lowercased()
+        guard let regex = try? NSRegularExpression(pattern: #"last\s+(\d{1,3})\s+days"#, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let nsRange = NSRange(lower.startIndex..<lower.endIndex, in: lower)
+        let matches = regex.matches(in: lower, options: [], range: nsRange)
+        let values: [Int] = matches.compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: lower) else { return nil }
+            return Int(lower[range])
+        }
+        return values.max()
+    }
+
+    static func extractDateReferencesForFreshnessCheck(from text: String) -> [Date] {
+        let sourceBody = sourceSectionBody(in: text) ?? text
+        let patterns = [
+            #"\b\d{4}-\d{2}-\d{2}\b"#,
+            #"\b(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+\d{1,2},\s+\d{4}\b"#,
+            #"\b\d{1,2}\s+(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+\d{4}\b"#
+        ]
+        var seen: Set<String> = []
+        var dates: [Date] = []
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            let nsRange = NSRange(sourceBody.startIndex..<sourceBody.endIndex, in: sourceBody)
+            let matches = regex.matches(in: sourceBody, options: [], range: nsRange)
+            for match in matches {
+                guard let range = Range(match.range, in: sourceBody) else { continue }
+                let token = String(sourceBody[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !token.isEmpty else { continue }
+                let key = token.lowercased()
+                guard !seen.contains(key) else { continue }
+                guard let parsed = parseDateReference(token) else { continue }
+                seen.insert(key)
+                dates.append(parsed)
+            }
+        }
+        return dates
+    }
+
+    static func sourceSectionBody(in text: String) -> String? {
+        let lower = text.lowercased()
+        guard let sourcesRange = lower.range(of: "sources") else { return nil }
+        let suffix = String(text[sourcesRange.lowerBound...])
+        let firstLineBreak = suffix.firstIndex(of: "\n") ?? suffix.startIndex
+        if firstLineBreak == suffix.startIndex {
+            return suffix
+        }
+        return String(suffix[firstLineBreak...])
+    }
+
+    static func parseDateReference(_ token: String) -> Date? {
+        let normalized = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        let isoFormatter = DateFormatter()
+        isoFormatter.locale = Locale(identifier: "en_US_POSIX")
+        isoFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        isoFormatter.dateFormat = "yyyy-MM-dd"
+        if let parsed = isoFormatter.date(from: normalized) {
+            return parsed
+        }
+
+        let monthDayYear = DateFormatter()
+        monthDayYear.locale = Locale(identifier: "en_US_POSIX")
+        monthDayYear.timeZone = TimeZone(secondsFromGMT: 0)
+        monthDayYear.dateFormat = "MMMM d, yyyy"
+        if let parsed = monthDayYear.date(from: normalized) {
+            return parsed
+        }
+
+        let monthDayYearShort = DateFormatter()
+        monthDayYearShort.locale = Locale(identifier: "en_US_POSIX")
+        monthDayYearShort.timeZone = TimeZone(secondsFromGMT: 0)
+        monthDayYearShort.dateFormat = "MMM d, yyyy"
+        if let parsed = monthDayYearShort.date(from: normalized) {
+            return parsed
+        }
+
+        let dayMonthYear = DateFormatter()
+        dayMonthYear.locale = Locale(identifier: "en_US_POSIX")
+        dayMonthYear.timeZone = TimeZone(secondsFromGMT: 0)
+        dayMonthYear.dateFormat = "d MMMM yyyy"
+        if let parsed = dayMonthYear.date(from: normalized) {
+            return parsed
+        }
+
+        let dayMonthYearShort = DateFormatter()
+        dayMonthYearShort.locale = Locale(identifier: "en_US_POSIX")
+        dayMonthYearShort.timeZone = TimeZone(secondsFromGMT: 0)
+        dayMonthYearShort.dateFormat = "d MMM yyyy"
+        return dayMonthYearShort.date(from: normalized)
+    }
+
+    static func interactivePromptRequiresToolExecution(_ prompt: String) -> Bool {
+        let normalized = prompt.lowercased()
+        let omniFocusMarkers = [
+            "omnifocus",
+            "omni focus",
+            "focusrelay",
+            "focus relay",
+            "mcp server"
+        ]
+        let taskMarkers = [
+            "inbox",
+            "task",
+            "tasks",
+            "project",
+            "projects",
+            "available actions",
+            "what did i complete",
+            "completed today"
+        ]
+        let wantsOmniFocusData = omniFocusMarkers.contains { normalized.contains($0) }
+        let wantsTaskData = taskMarkers.contains { normalized.contains($0) }
+        return wantsOmniFocusData && wantsTaskData
+    }
+
     nonisolated static func ownerDirectChatJID(ownerID: Int64?) -> String? {
         guard let ownerID else { return nil }
         return "telegram_\(ownerID)@direct"
@@ -765,6 +1220,13 @@ actor NanoClawHostService {
         default:
             return false
         }
+    }
+
+    nonisolated static func scheduledContextMode(for task: ScheduledTaskRow) -> String {
+        if scheduledPromptRequiresToolExecution(task.prompt) {
+            return "isolated"
+        }
+        return task.contextMode
     }
 
     private func janitorLoop() async {
@@ -1087,7 +1549,7 @@ actor NanoClawHostService {
             return
         }
 
-        let contextMode = nonEmptyStringValue(payload, keys: ["context_mode"]) ?? "group"
+        let contextMode = nonEmptyStringValue(payload, keys: ["context_mode"]) ?? "isolated"
         let nextRun = nextRunISO(scheduleType: scheduleType, scheduleValue: scheduleValue)
         let taskID = nonEmptyStringValue(payload, keys: ["task_id"]) ?? "task-\(Int(Date().timeIntervalSince1970 * 1000))-\(UUID().uuidString.prefix(6))"
 
@@ -1194,6 +1656,10 @@ Andy: I was offline earlier, so I'm running your missed scheduled task now.
             hint = "Network connectivity failed. Please check internet access on the host."
         case .tokenOverflow:
             hint = "The report prompt/context is too large. Please shorten the scheduled prompt."
+        case .missingToolCalls:
+            hint = "The model did not execute required tools. A quick retry was attempted."
+        case .staleContent:
+            hint = "No fresh dated sources were found in the report output. I will retry and only send fresh updates."
         case .toolError:
             hint = "A required tool failed during execution. Please retry or inspect tool health."
         case .unknown:
@@ -1229,6 +1695,27 @@ Your scheduled task run failed.
         return min(scaled, safeMax)
     }
 
+    nonisolated static func retryBackoffSeconds(
+        for cause: ScheduledRunFailureCause?,
+        retryAttempt: Int,
+        initialBackoffSec: Int,
+        maxBackoffSec: Int
+    ) -> Int {
+        if cause == .missingToolCalls {
+            let fastInitial = min(max(5, initialBackoffSec), 15)
+            return retryBackoffSeconds(
+                forRetryAttempt: retryAttempt,
+                initialBackoffSec: fastInitial,
+                maxBackoffSec: maxBackoffSec
+            )
+        }
+        return retryBackoffSeconds(
+            forRetryAttempt: retryAttempt,
+            initialBackoffSec: initialBackoffSec,
+            maxBackoffSec: maxBackoffSec
+        )
+    }
+
     private func enqueueDueScheduledTasks(reason: String) async {
         do {
             let due = try store.dueTasks(nowISO: isoNow())
@@ -1258,7 +1745,7 @@ Your scheduled task run failed.
                     isScheduledTask: true,
                     isStartupCatchUp: reason == "startup",
                     scheduledTaskID: task.id,
-                    contextMode: task.contextMode,
+                    contextMode: Self.scheduledContextMode(for: task),
                     enqueuedAt: Date()
                 )
                 await queue.enqueue(job)
@@ -1288,7 +1775,8 @@ Your scheduled task run failed.
         }
         scheduledRetryAttempts[taskID] = attempt
         let delaySec = Self.retryBackoffSeconds(
-            forRetryAttempt: attempt,
+            for: cause,
+            retryAttempt: attempt,
             initialBackoffSec: scheduledRetryInitialBackoffSec,
             maxBackoffSec: scheduledRetryMaxBackoffSec
         )
@@ -1336,6 +1824,7 @@ Your scheduled task run failed.
         let chatJID = job.chatJID
         let thresholdNs = UInt64(max(workingAckThresholdMs, 1000)) * 1_000_000
         let repeatNs = UInt64(max(workingAckRepeatIntervalMs, 1000)) * 1_000_000
+        let maxAckUpdates = workingAckMaxUpdates
 
         if let existing = workingAckTasks.removeValue(forKey: requestID) {
             existing.cancel()
@@ -1348,14 +1837,20 @@ Your scheduled task run failed.
             }
 
             var repeatUpdate = false
-            while !Task.isCancelled {
+            var sentCount = 0
+            while !Task.isCancelled,
+                  Self.shouldSendWorkingAck(sentCount: sentCount, maxUpdates: maxAckUpdates) {
                 await self?.emitWorkingAckIfPending(
                     requestID: requestID,
                     channel: channel,
                     chatJID: chatJID,
                     repeatUpdate: repeatUpdate
                 )
+                sentCount += 1
                 repeatUpdate = true
+                guard Self.shouldSendWorkingAck(sentCount: sentCount, maxUpdates: maxAckUpdates) else {
+                    break
+                }
                 do {
                     try await Task.sleep(nanoseconds: repeatNs)
                 } catch {
@@ -1401,6 +1896,10 @@ Your scheduled task run failed.
             return "\(assistantName): Still working on your request, thanks for your patience..."
         }
         return "\(assistantName): Working on it, still processing your request..."
+    }
+
+    nonisolated static func shouldSendWorkingAck(sentCount: Int, maxUpdates: Int) -> Bool {
+        sentCount < max(0, maxUpdates)
     }
 
     private func recordLatency(totalMs: Int, timedOut: Bool) {
@@ -1883,7 +2382,7 @@ Your scheduled task run failed.
             prompt: prompt,
             scheduleType: "cron",
             scheduleValue: cronValue,
-            contextMode: "group",
+            contextMode: "isolated",
             nextRun: nextRun,
             status: "active",
             createdAt: isoNow()

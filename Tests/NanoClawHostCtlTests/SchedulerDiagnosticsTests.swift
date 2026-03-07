@@ -39,6 +39,24 @@ func testSchedulerDiagnosticsClassifierMapsTokenOverflow() {
 }
 
 @Test
+func testSchedulerDiagnosticsClassifierMapsPseudoToolTranscriptToMissingToolCalls() {
+    let cause = SchedulerDiagnosticsClassifier.classify(
+        status: "error",
+        detail: "Model returned pseudo tool syntax without structured tool calls."
+    )
+    #expect(cause == .missingToolCalls)
+}
+
+@Test
+func testSchedulerDiagnosticsClassifierMapsFreshnessGateFailuresToStaleContent() {
+    let cause = SchedulerDiagnosticsClassifier.classify(
+        status: "error",
+        detail: "Scheduled news freshness check failed: missing dated sources in the report output."
+    )
+    #expect(cause == .staleContent)
+}
+
+@Test
 func testSchedulerDiagnosticsClassifierReturnsNilForNonErrorStatus() {
     let cause = SchedulerDiagnosticsClassifier.classify(
         status: "success",

@@ -70,6 +70,46 @@ func scheduledRunFailureClassifierMapsTokenOverflow() {
 }
 
 @Test
+func scheduledRunFailureClassifierMapsPseudoToolTranscriptToMissingToolCalls() {
+    let cause = ScheduledRunFailureClassifier.classify(
+        status: "error",
+        detail: "Model returned pseudo tool syntax without structured tool calls."
+    )
+    #expect(cause == .missingToolCalls)
+    #expect(ScheduledRunFailureClassifier.isTransient(cause) == true)
+}
+
+@Test
+func scheduledRunFailureClassifierMapsActualToolFailureToToolError() {
+    let cause = ScheduledRunFailureClassifier.classify(
+        status: "error",
+        detail: "A required tool failed during execution."
+    )
+    #expect(cause == .toolError)
+    #expect(ScheduledRunFailureClassifier.isTransient(cause) == false)
+}
+
+@Test
+func scheduledRunFailureClassifierMapsMissingToolCallsAndTreatsAsTransient() {
+    let cause = ScheduledRunFailureClassifier.classify(
+        status: "error",
+        detail: "Scheduled run required tool execution, but the model returned no structured tool calls."
+    )
+    #expect(cause == .missingToolCalls)
+    #expect(ScheduledRunFailureClassifier.isTransient(cause) == true)
+}
+
+@Test
+func scheduledRunFailureClassifierMapsFreshnessGateFailureAndTreatsAsTransient() {
+    let cause = ScheduledRunFailureClassifier.classify(
+        status: "error",
+        detail: "Scheduled news freshness check failed: all cited source dates are older than 7 days."
+    )
+    #expect(cause == .staleContent)
+    #expect(ScheduledRunFailureClassifier.isTransient(cause) == true)
+}
+
+@Test
 func scheduledRunFailureClassifierReturnsNilForNonErrorStatus() {
     let cause = ScheduledRunFailureClassifier.classify(
         status: "success",
@@ -97,4 +137,14 @@ func scheduledFailureNoticeIncludesTokenOverflowHint() {
     )
     #expect(text.contains("task-999"))
     #expect(text.lowercased().contains("shorten"))
+}
+
+@Test
+func scheduledFailureNoticeIncludesFreshnessHint() {
+    let text = NanoClawHostService.scheduledFailureNotice(
+        taskID: "task-freshness",
+        cause: .staleContent
+    )
+    #expect(text.contains("task-freshness"))
+    #expect(text.lowercased().contains("fresh"))
 }

@@ -1,6 +1,6 @@
 # NanoClawSwift Implementation Plan (Swift-First)
 
-Updated: 2026-02-18
+Updated: 2026-03-06
 
 ## Summary
 
@@ -304,21 +304,44 @@ This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, w
 
 ## Next Priority Queue
 
-1. Re-run daily scheduled-report soak across two cycles and verify trigger + delivery evidence in logs/DB.
-2. Keep using serialized runtime update flow by default for local validation (`done and adopted as standard on 2026-02-19`):
-   - `swift run nanoclaw-devctl rebuild-and-restart slim`
-3. Finalize Swift-native dev build reliability hardening (`done on 2026-02-19`):
-   - build orchestration remains in `nanoclaw-devctl` (no control-loop shell fallback)
-   - warm static build path + transient retry guard active
-   - one clean end-to-end `rebuild-and-restart slim` validated
-4. Continue MCP usability polish (cursor UX + human-readable rendering) only when tied to observed user friction; avoid speculative over-architecture.
-5. Run production-readiness gate check and publish a short go/no-go report in `PRODUCTION_READINESS.md` after queue items 1-4 are stable.
-6. Dependency hardening quick win (`done 2026-02-19`):
+1. Scheduled Apple report runtime hardening (`done 2026-03-06`):
+   - stricter targeted-source prompt deployed to the live scheduler DB
+   - scheduled runs now execute on forced `tool_calling` path
+   - manual trigger validated successful completion with fresh dated Apple sources
+   - accepts either fresh dated sources or explicit no-fresh-updates branch
+2. Scheduled Swift tip runtime hardening (`done 2026-03-06`):
+   - scheduled runs now force `tool_calling`
+   - one-shot recovery path is active for missing structured tool calls
+   - manual trigger validated successful completion with `toolCalls=2`
+   - no-fresh-results wording corrected from "retrieval failed" to explicit no-fresh-updates messaging
+   - source search policy expanded to targeted Swift sources with 14-day fallback when 7-day window is empty
+3. Scheduled-report soak closure (`in progress`, narrowed scope to provider/network stability):
+   - Apple and Swift scheduled tasks now both behave correctly at runtime
+   - remaining soak blocker is general provider/network noise, not scheduler/task logic
+4. Production-readiness gate re-run and short go/no-go report:
+   - rerun gate checklist with current Apple + Swift scheduled-task behavior
+   - verify no new regressions in next soak window
+5. Serialized runtime update flow (`done`, standard path): `swift run nanoclaw-devctl rebuild-and-restart slim`.
+6. Swift-native dev build reliability hardening (`done 2026-02-19`, but still an operational pain point):
+   - runtime-critical builds still hit static SDK cross-arch and transient network/submodule fetch failures
+   - keep improving reproducibility so deploy/validate loops are less fragile
+7. MCP stability hardening follow-up (`in progress`):
+   - host-side MCP lifecycle fix shipped on `2026-03-04`:
+     - explicit `client.disconnect()` before remove/replace/shutdown in `HostMCPRuntime`
+     - restart dead same-spec host MCP servers during bootstrap
+     - startup failure path now disconnects/terminates partial MCP server state
+   - post-restart verification (`2026-03-04`):
+     - host relay bootstrap endpoint loads FocusRelay successfully (`loadedServerCount=1`, `loaded_tools=9`)
+     - host MCP status now reports loaded `focusrelay` server after bootstrap
+   - upstream SDK follow-up still needed for `Client.connect(transport:)` stream-finished loop behavior.
+8. Continue MCP usability polish (cursor UX + human-readable rendering) only when tied to observed user friction; avoid speculative over-architecture.
+9. Dependency hardening quick win (`done 2026-02-19`; keep pin for now):
    - Root cause recap:
      - we switched the `slim` build path from containerized `swift:6.2.3` (glibc) to static Linux SDK (musl) in `nanoclaw-devctl`.
      - this surfaced a latent Conduit Linux import assumption (`os(Linux) -> import Glibc`) that previously stayed hidden in glibc-only build mode.
    - Decision:
      - keep static SDK workflow (it improved build determinism in this repo after repeated containerized SwiftPM contention/cache failures).
+     - keep current pinned Swarm commit until upstream PR path is complete and validated in this repo.
      - remove local editable `Packages/Swarm` from root dependency graph and pin remote Swarm + Conduit revisions for reproducible builds.
    - Implementation details:
      - fork: `https://github.com/deverman/Conduit`
@@ -334,6 +357,11 @@ This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, w
      - open upstream PR to `christopherkarani/Swarm` and replace fork pin with upstream tag/revision once merged.
      - keep this note because this repo previously had musl friction and the compatibility requirement is still relevant.
 
+10. Provider throttle safety default (`done 2026-03-04`):
+   - host now backfills `NANOCLAW_PROVIDER_RPM_LIMIT` into container passthrough when unset/invalid.
+   - resolution order: explicit `NANOCLAW_PROVIDER_RPM_LIMIT` (if valid) -> valid `KIMI_RPM_LIMIT` -> default `18`.
+   - regression coverage added in `HostEnvironmentConfigTests`.
+
 ### Soak Checkpoint (2026-02-19)
 
 - [x] Cycle 1 evidence captured:
@@ -344,10 +372,10 @@ This plan tracks Swift-first parity and leapfrog work relative to `microclaw`, w
   - host healthy (`nanoclaw-host` running, socket valid)
   - Apple report task still active with next run `2026-02-20T00:00:00Z`
   - prior success evidence retained (`2026-02-19T00:03:53Z`)
-- [ ] Cycle 2 pending (next window on `2026-02-20`), then re-check:
-  - `scheduler-diagnostics`
-  - `scheduled_tasks` row advancement
-  - `task_run_logs` outcome for both recurring tasks
+- [x] Cycle 2 closure recorded on `2026-03-04` after runtime restart/catch-up:
+  - `scheduler-diagnostics` shows `host.healthy=true` and startup catch-up evidence for all active tasks.
+  - `scheduled_tasks` rows advanced (`next_run`: `2026-03-04T23:00:00Z`, `2026-03-05T00:00:00Z`, `2026-03-05T00:30:00Z`).
+  - `task_run_logs` show successful runs at `2026-03-04T12:15:42Z`, `2026-03-04T12:16:24Z`, `2026-03-04T12:18:24Z`.
 - [x] Noted transient failure cluster on `task-1771244294918-8232D9` at `00:30/00:45/00:50Z` caused by `network_offline`; retry policy fired as designed.
 
 ## Backlog

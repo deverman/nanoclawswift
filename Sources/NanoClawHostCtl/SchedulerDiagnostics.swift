@@ -5,6 +5,8 @@ enum SchedulerFailureCause: String, Sendable {
     case providerTimeout = "provider_timeout"
     case networkOffline = "network_offline"
     case tokenOverflow = "token_overflow"
+    case missingToolCalls = "missing_tool_calls"
+    case staleContent = "stale_content"
     case toolError = "tool_error"
     case unknown = "unknown"
 }
@@ -39,6 +41,24 @@ enum SchedulerDiagnosticsClassifier {
             || text.contains("maximum context length")
             || text.contains("context length") {
             return .tokenOverflow
+        }
+        if text.contains("required tool execution")
+            && text.contains("no structured tool calls") {
+            return .missingToolCalls
+        }
+        if text.contains("did not issue a valid structured tool call") {
+            return .missingToolCalls
+        }
+        if text.contains("pseudo tool syntax")
+            || text.contains("structured tool calls")
+            || text.contains("function_calls")
+            || text.contains("<invoke") {
+            return .missingToolCalls
+        }
+        if text.contains("freshness check failed")
+            || text.contains("missing dated sources")
+            || text.contains("all cited source dates are older than") {
+            return .staleContent
         }
         if text.contains("tool"), text.contains("error") || text.contains("failed") {
             return .toolError
