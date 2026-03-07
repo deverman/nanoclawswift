@@ -709,6 +709,7 @@ func preferredStaticLinuxSDKArgument(
     let home = environment["HOME"] ?? NSHomeDirectory()
     let sdkRoot = "\(home)/Library/org.swift.swiftpm/swift-sdks"
     let preferredSDKIDs = [
+        "swift-6.2.4-RELEASE_static-linux-0.1.0",
         "swift-6.2.4-RELEASE_static-linux-0.0.1",
         "swift-6.2.3-RELEASE_static-linux-0.0.1"
     ]

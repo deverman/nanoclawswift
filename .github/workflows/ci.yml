@@ -14,6 +14,11 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v3
+      with:
+        swift-version: '6.2.4'
+
     - name: Docs consistency check
       run: ./scripts/check-docs-consistency.sh
       
@@ -53,6 +58,32 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v3
+      with:
+        swift-version: '6.2.4'
+
+    - name: Cache Swift static SDKs
+      uses: actions/cache@v4
+      with:
+        path: ~/Library/org.swift.swiftpm/swift-sdks
+        key: ${{ runner.os }}-swift-static-sdk-6.2.4-0.1.0
+
+    - name: Install Swift static Linux SDK
+      env:
+        NANOCLAW_STATIC_SDK_ID: swift-6.2.4-RELEASE_static-linux-0.1.0
+        NANOCLAW_STATIC_SDK_URL: https://download.swift.org/swift-6.2.4-release/static-sdk/swift-6.2.4-RELEASE/swift-6.2.4-RELEASE_static-linux-0.1.0.artifactbundle.tar.gz
+        NANOCLAW_STATIC_SDK_CHECKSUM: 24bdf84495dd31a6de2eb679647c1982b747bfbfe1a2060c779d84dcecd902a4
+      run: |
+        set -euo pipefail
+        SDK_ROOT="$HOME/Library/org.swift.swiftpm/swift-sdks/${NANOCLAW_STATIC_SDK_ID}.artifactbundle"
+        if [ ! -d "$SDK_ROOT" ]; then
+          swift sdk install "$NANOCLAW_STATIC_SDK_URL" --checksum "$NANOCLAW_STATIC_SDK_CHECKSUM"
+        fi
+        echo "NANOCLAW_DEVCTL_SWIFT_BIN=$(which swift)" >> "$GITHUB_ENV"
+        echo "NANOCLAW_DEVCTL_SWIFT_SDK=$NANOCLAW_STATIC_SDK_ID" >> "$GITHUB_ENV"
+        swift sdk list
       
     - name: Build container (slim)
       run: swift run nanoclaw-devctl build-agent-image slim

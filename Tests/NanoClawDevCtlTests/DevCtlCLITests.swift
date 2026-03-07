@@ -87,7 +87,8 @@ func testStaticLinuxBuildArgumentsUseProductSdkAndTriple() throws {
     #expect(args.count > sdkIndex + 1)
     let sdkValue = args[sdkIndex + 1]
     #expect(
-        sdkValue.contains("swift-6.2.4-RELEASE_static-linux-0.0.1")
+        sdkValue.contains("swift-6.2.4-RELEASE_static-linux-0.1.0")
+        || sdkValue.contains("swift-6.2.4-RELEASE_static-linux-0.0.1")
         || sdkValue.contains("swift-6.2.3-RELEASE_static-linux-0.0.1")
     )
     #expect(args.contains("--triple"))
@@ -108,12 +109,25 @@ func testPreferredStaticLinuxSDKArgumentUsesEnvironmentOverride() {
 
 @Test
 func testPreferredStaticLinuxSDKArgumentPrefersInstalledArchSpecificBundlePath() {
-    let expected = "swift-6.2.4-RELEASE_static-linux-0.0.1"
+    let expected = "swift-6.2.4-RELEASE_static-linux-0.1.0"
     let selected = preferredStaticLinuxSDKArgument(
         linuxTargetTriple: "aarch64-swift-linux-musl",
         environment: ["HOME": "/Users/test"],
         fileExists: { path in
-            path == "/Users/test/Library/org.swift.swiftpm/swift-sdks/\(expected).artifactbundle/swift-6.2.4-RELEASE_static-linux-0.0.1/swift-linux-musl/musl-1.2.5.sdk/aarch64/usr/lib/swift_static/linux-static/_Concurrency.swiftmodule"
+            path == "/Users/test/Library/org.swift.swiftpm/swift-sdks/\(expected).artifactbundle/swift-6.2.4-RELEASE_static-linux-0.1.0/swift-linux-musl/musl-1.2.5.sdk/aarch64/usr/lib/swift_static/linux-static/_Concurrency.swiftmodule"
+        }
+    )
+    #expect(selected == expected)
+}
+
+@Test
+func testPreferredStaticLinuxSDKArgumentFallsBackToLegacy623BundleWhenOnlyLegacyIsInstalled() {
+    let expected = "swift-6.2.3-RELEASE_static-linux-0.0.1"
+    let selected = preferredStaticLinuxSDKArgument(
+        linuxTargetTriple: "aarch64-swift-linux-musl",
+        environment: ["HOME": "/Users/test"],
+        fileExists: { path in
+            path == "/Users/test/Library/org.swift.swiftpm/swift-sdks/\(expected).artifactbundle/swift-6.2.3-RELEASE_static-linux-0.0.1/swift-linux-musl/musl-1.2.5.sdk/aarch64/usr/lib/swift_static/linux-static/_Concurrency.swiftmodule"
         }
     )
     #expect(selected == expected)
