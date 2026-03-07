@@ -63,3 +63,37 @@ func testStartupCatchUpNoticeIncludesTaskAndSummary() {
     #expect(notice.contains("task-123"))
     #expect(notice.contains("Search for latest Apple news"))
 }
+
+@Test
+func testScheduledContextModeForcesIsolatedForToolRequiredPrompts() {
+    let task = ScheduledTaskRow(
+        id: "task-report",
+        groupFolder: "telegram-direct",
+        chatJID: "telegram_1@direct",
+        prompt: "Search for the latest Apple news and send a digest",
+        scheduleType: "cron",
+        scheduleValue: "0 8 * * *",
+        contextMode: "group",
+        nextRun: "2026-03-01T00:00:00Z",
+        status: "active",
+        createdAt: "2026-03-01T00:00:00Z"
+    )
+    #expect(NanoClawHostService.scheduledContextMode(for: task) == "isolated")
+}
+
+@Test
+func testScheduledContextModePreservesTaskContextForNonReportPrompts() {
+    let task = ScheduledTaskRow(
+        id: "task-generic",
+        groupFolder: "telegram-direct",
+        chatJID: "telegram_1@direct",
+        prompt: "Send a heartbeat status update",
+        scheduleType: "cron",
+        scheduleValue: "0 * * * *",
+        contextMode: "group",
+        nextRun: "2026-03-01T00:00:00Z",
+        status: "active",
+        createdAt: "2026-03-01T00:00:00Z"
+    )
+    #expect(NanoClawHostService.scheduledContextMode(for: task) == "group")
+}

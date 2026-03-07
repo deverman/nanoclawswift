@@ -9,6 +9,7 @@ struct HostRuntimeConfig: Sendable {
     let containerTimeoutMs: Int
     let containerPollMs: Int
     let queueJobWatchdogMs: Int
+    let scheduledQueueJobWatchdogMs: Int
     let sessionJanitorIntervalSec: Int
     let staleClaimReapAgeSec: Int
     let containerPassthroughEnvironment: [String: String]
@@ -72,6 +73,27 @@ actor ContainerSessionManager {
     init(config: HostRuntimeConfig, logger: Logger) {
         self.config = config
         self.logger = logger
+    }
+
+    nonisolated private static var preferredContainerCLI: String {
+        let brewPath = "/opt/homebrew/opt/container/bin/container"
+        if FileManager.default.isExecutableFile(atPath: brewPath) {
+            return brewPath
+        }
+        return "container"
+    }
+
+    private static func makeContainerProcess(arguments: [String]) -> Process {
+        let process = Process()
+        let executable = preferredContainerCLI
+        if executable.hasPrefix("/") {
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = [executable] + arguments
+        }
+        return process
     }
 
     nonisolated static func deterministicContainerName(for groupFolder: String) -> String {
@@ -180,9 +202,7 @@ actor ContainerSessionManager {
     }
 
     func sweepStaleContainers() async {
-        let command = Process()
-        command.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        command.arguments = ["container", "ls", "--all", "--format", "json"]
+        let command = Self.makeContainerProcess(arguments: ["ls", "--all", "--format", "json"])
         let stdout = Pipe()
         let stderr = Pipe()
         command.standardOutput = stdout
@@ -268,12 +288,11 @@ actor ContainerSessionManager {
         }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.currentDirectoryURL = URL(fileURLWithPath: config.projectRoot)
 
         await stopAndRemoveContainer(name: containerName)
 
-        var args: [String] = ["container", "run", "-i", "--rm", "--name", containerName]
+        var args: [String] = ["run", "-i", "--rm", "--name", containerName]
         args.append(contentsOf: ["-v", "\(groupDir.path):/workspace/group"])
         args.append(contentsOf: ["-v", "\(ipcRoot.path):/workspace/ipc"])
         args.append(contentsOf: ["-v", "\(sharedMemoryDir.path):/workspace/shared-memory"])
@@ -319,7 +338,9 @@ actor ContainerSessionManager {
             args.append("--is-main")
         }
 
-        process.arguments = args
+        let launch = Self.makeContainerProcess(arguments: args)
+        process.executableURL = launch.executableURL
+        process.arguments = launch.arguments
         let stdinPipe = Pipe()
         process.standardInput = stdinPipe
         process.standardOutput = logHandle
@@ -374,9 +395,7 @@ actor ContainerSessionManager {
     }
 
     private func removeContainer(name: String) async {
-        let command = Process()
-        command.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        command.arguments = ["container", "rm", name]
+        let command = Self.makeContainerProcess(arguments: ["rm", name])
         let stderr = Pipe()
         command.standardError = stderr
         do {
@@ -391,9 +410,7 @@ actor ContainerSessionManager {
     }
 
     private func stopAndRemoveContainer(name: String) async {
-        let stop = Process()
-        stop.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        stop.arguments = ["container", "stop", name]
+        let stop = Self.makeContainerProcess(arguments: ["stop", name])
         do {
             try stop.run()
             stop.waitUntilExit()

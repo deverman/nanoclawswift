@@ -73,7 +73,7 @@ func testVerifyTelegramSoakParsingExplicitArgs() throws {
 }
 
 @Test
-func testStaticLinuxBuildArgumentsUseProductSdkAndTriple() {
+func testStaticLinuxBuildArgumentsUseProductSdkAndTriple() throws {
     let args = staticLinuxBuildArguments(
         buildPath: ".build/linux/release",
         linuxTargetTriple: "aarch64-swift-linux-musl"
@@ -83,11 +83,40 @@ func testStaticLinuxBuildArgumentsUseProductSdkAndTriple() {
     #expect(args.contains("--skip-update"))
     #expect(args.contains("--disable-automatic-resolution"))
     #expect(args.contains("--swift-sdk"))
-    #expect(args.contains("swift-6.2.3-RELEASE_static-linux-0.0.1"))
+    let sdkIndex = try #require(args.firstIndex(of: "--swift-sdk"))
+    #expect(args.count > sdkIndex + 1)
+    let sdkValue = args[sdkIndex + 1]
+    #expect(
+        sdkValue.contains("swift-6.2.4-RELEASE_static-linux-0.0.1")
+        || sdkValue.contains("swift-6.2.3-RELEASE_static-linux-0.0.1")
+    )
     #expect(args.contains("--triple"))
     #expect(args.contains("aarch64-swift-linux-musl"))
     #expect(args.contains("--build-path"))
     #expect(args.contains(".build/linux/release"))
+}
+
+@Test
+func testPreferredStaticLinuxSDKArgumentUsesEnvironmentOverride() {
+    let selected = preferredStaticLinuxSDKArgument(
+        linuxTargetTriple: "aarch64-swift-linux-musl",
+        environment: ["NANOCLAW_DEVCTL_SWIFT_SDK": "custom-sdk-id"],
+        fileExists: { _ in false }
+    )
+    #expect(selected == "custom-sdk-id")
+}
+
+@Test
+func testPreferredStaticLinuxSDKArgumentPrefersInstalledArchSpecificBundlePath() {
+    let expected = "swift-6.2.4-RELEASE_static-linux-0.0.1"
+    let selected = preferredStaticLinuxSDKArgument(
+        linuxTargetTriple: "aarch64-swift-linux-musl",
+        environment: ["HOME": "/Users/test"],
+        fileExists: { path in
+            path == "/Users/test/Library/org.swift.swiftpm/swift-sdks/\(expected).artifactbundle/swift-6.2.4-RELEASE_static-linux-0.0.1/swift-linux-musl/musl-1.2.5.sdk/aarch64/usr/lib/swift_static/linux-static/_Concurrency.swiftmodule"
+        }
+    )
+    #expect(selected == expected)
 }
 
 @Test
@@ -136,7 +165,19 @@ func testPreferredSwiftExecutablePathUsesExplicitOverride() {
 }
 
 @Test
-func testPreferredSwiftExecutablePathUsesPinnedToolchainWhenPresent() {
+func testPreferredSwiftExecutablePathUsesPreferredPinnedToolchainWhenPresent() {
+    let expected = "/Users/test/Library/Developer/Toolchains/swift-6.2.4-RELEASE.xctoolchain/usr/bin/swift"
+    let path = preferredSwiftExecutablePath(
+        environment: ["HOME": "/Users/test"],
+        isExecutableFile: { candidate in
+            candidate == expected
+        }
+    )
+    #expect(path == expected)
+}
+
+@Test
+func testPreferredSwiftExecutablePathFallsBackToLegacyPinnedToolchain() {
     let expected = "/Users/test/Library/Developer/Toolchains/swift-6.2.3-RELEASE.xctoolchain/usr/bin/swift"
     let path = preferredSwiftExecutablePath(
         environment: ["HOME": "/Users/test"],
@@ -154,6 +195,19 @@ func testPreferredSwiftExecutablePathFallsBackToSwift() {
         isExecutableFile: { _ in false }
     )
     #expect(path == "swift")
+}
+
+@Test
+func testCompatibleSwiftExecutablePathUses623ToolchainFor623StaticSDK() {
+    let path = compatibleSwiftExecutablePath(
+        swiftSDKArgument: "swift-6.2.3-RELEASE_static-linux-0.0.1",
+        environment: ["HOME": "/Users/test"],
+        isExecutableFile: { candidate in
+            candidate == "/Users/test/Library/Developer/Toolchains/swift-6.2.4-RELEASE.xctoolchain/usr/bin/swift"
+                || candidate == "/Users/test/Library/Developer/Toolchains/swift-6.2.3-RELEASE.xctoolchain/usr/bin/swift"
+        }
+    )
+    #expect(path == "/Users/test/Library/Developer/Toolchains/swift-6.2.3-RELEASE.xctoolchain/usr/bin/swift")
 }
 
 @Test

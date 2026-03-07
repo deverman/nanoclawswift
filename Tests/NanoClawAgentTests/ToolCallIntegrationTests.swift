@@ -175,6 +175,7 @@ struct MCPBridgedListTasksProbeTool: Tool {
     }
 }
 
+
 struct MCPReloadProbeTool: Tool {
     let name = "mcp_reload"
     let description = "Reloads MCP runtime config for tests"
@@ -332,6 +333,24 @@ func testExplicitMCPHostCLIPaginationAddsSlashMoreHint() async throws {
 }
 
 @Test
+func testExplicitMCPHostCLIListTasksEmptyResultSuggestsScopedViews() async throws {
+    let provider = SequencedInferenceProvider(outputs: [])
+    let agent = await NanoClawAgent(
+        groupFolder: "/tmp/test",
+        instructions: "Test",
+        tools: [MCPHostCLIProbeTool(output: #"{"items":[],"returnedCount":0}"#)],
+        memory: nil,
+        inferenceProvider: provider,
+        configurationName: "TestAgent"
+    )
+
+    let result = try await agent.run("/mcp-cli focusrelay list-tasks --limit 50")
+    #expect(result.output.contains("No items were returned for this `list-tasks` view"))
+    #expect(result.output.contains("--project-view all"))
+    #expect(result.output.contains("--inbox-only true"))
+}
+
+@Test
 func testSlashMoreReusesLastMCPHostCLIInvocationWithCursor() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let recorder = MCPHostCLISequenceRecorder(outputs: [
@@ -405,6 +424,26 @@ func testSlashMoreWithoutPreviousPaginationReturnsHelpfulMessage() async throws 
 }
 
 @Test
+func testSlashMoreAfterNonPaginatedMCPResultReturnsNoNextPageMessage() async throws {
+    let provider = SequencedInferenceProvider(outputs: [])
+    let recorder = MCPHostCLISequenceRecorder(outputs: [
+        #"{"items":[{"name":"Task 1","id":"t1"},{"name":"Task 2","id":"t2"}],"returnedCount":2}"#
+    ])
+    let agent = await NanoClawAgent(
+        groupFolder: "/tmp/test",
+        instructions: "Test",
+        tools: [MCPHostCLISequencedTool(recorder: recorder)],
+        memory: nil,
+        inferenceProvider: provider,
+        configurationName: "TestAgent"
+    )
+
+    _ = try await agent.run("/mcp-cli focusrelay list-tasks --inbox-only true --limit 50")
+    let result = try await agent.run("/more")
+    #expect(result.output.contains("has no next page"))
+}
+
+@Test
 func testSlashMoreAfterEmptyNextPageReturnsNoAdditionalItemsMessage() async throws {
     let provider = SequencedInferenceProvider(outputs: [])
     let recorder = MCPHostCLISequenceRecorder(outputs: [
@@ -451,24 +490,35 @@ func testSlashMoreAfterCursorPageWithoutNextCursorReturnsNoAdditionalItemsMessag
 }
 
 @Test
-func testShowMorePhraseDoesNotTriggerDeterministicPaginationPath() async throws {
-    let provider = SequencedInferenceProvider(outputs: [
-        InferenceResponse(content: "model-path", finishReason: .completed),
-        InferenceResponse(content: "model-path", finishReason: .completed)
+func testShowMorePhraseUsesDeterministicPaginationPath() async throws {
+    let provider = SequencedInferenceProvider(outputs: [])
+    let recorder = MCPHostCLISequenceRecorder(outputs: [
+        #"{"nextCursor":"5","items":[{"name":"Task 1","id":"t1"}]}"#,
+        #"{"nextCursor":"7","items":[{"name":"Task 2","id":"t2"},{"name":"Task 3","id":"t3"}]}"#
     ])
     let agent = await NanoClawAgent(
         groupFolder: "/tmp/test",
         instructions: "Test",
-        tools: [MCPHostCLIProbeTool(output: #"{"nextCursor":"5","items":[{"name":"Task 1","id":"t1"}]}"#)],
+        tools: [MCPHostCLISequencedTool(recorder: recorder)],
         memory: nil,
         inferenceProvider: provider,
         configurationName: "TestAgent"
     )
 
-    let result = try await agent.run("show more")
-    #expect(result.metadata["nanoclaw.execution_route"]?.stringValue == ExecutionRoute.planAndExecute.rawValue)
-    #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue != true)
+    _ = try await agent.run("/mcp-cli focusrelay list-tasks --inbox-only true --limit 5")
+    let result = try await agent.run("show more 2")
+    #expect(result.output.contains("Found 2 item(s):"))
+    #expect(result.metadata["nanoclaw.explicit_tool_mode"]?.boolValue == true)
+
+    let calls = await recorder.callArguments
+    #expect(calls.count == 2)
+    let secondArgs = calls[1]["args"]?.arrayValue?.compactMap(\.stringValue) ?? []
+    #expect(secondArgs.contains("--cursor"))
+    #expect(secondArgs.contains("5"))
+    #expect(secondArgs.contains("--limit"))
+    #expect(secondArgs.contains("2"))
 }
+
 
 @Test
 func testUnknownSlashCommandFallsBackToPlanAndExecute() async throws {
@@ -598,6 +648,8 @@ func testStructuredScheduleAndCancelPersistIPCRequests() async throws {
     let taskTypes = Set(payloads.compactMap { $0["type"] as? String })
     #expect(taskTypes.contains("schedule_task"))
     #expect(taskTypes.contains("cancel_task"))
+    let scheduledPayload = payloads.first(where: { ($0["type"] as? String) == "schedule_task" })
+    #expect(scheduledPayload?["context_mode"] as? String == "isolated")
 }
 
 @Test

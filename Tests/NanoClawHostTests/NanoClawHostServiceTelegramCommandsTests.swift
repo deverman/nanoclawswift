@@ -52,6 +52,7 @@ private func makeTelegramCommandService(
         containerTimeoutMs: 1_000,
         containerPollMs: 25,
         queueJobWatchdogMs: 1_000,
+        scheduledQueueJobWatchdogMs: 1_000,
         sessionJanitorIntervalSec: 30,
         staleClaimReapAgeSec: 180,
         containerPassthroughEnvironment: [:]
@@ -103,13 +104,13 @@ private func claimOutboundMessages(_ service: NanoClawHostService) async throws 
     return decoded.messages
 }
 
-private func fetchTaskRows(dbPath: String) throws -> [(id: String, chatJID: String, status: String, scheduleType: String, scheduleValue: String)] {
+private func fetchTaskRows(dbPath: String) throws -> [(id: String, chatJID: String, status: String, scheduleType: String, scheduleValue: String, contextMode: String)] {
     let db = try DatabaseQueue(path: dbPath)
     return try db.read { db in
         let rows = try Row.fetchAll(
             db,
             sql: """
-            SELECT id, chat_jid, status, schedule_type, schedule_value
+            SELECT id, chat_jid, status, schedule_type, schedule_value, context_mode
             FROM scheduled_tasks
             ORDER BY created_at DESC;
             """
@@ -120,7 +121,8 @@ private func fetchTaskRows(dbPath: String) throws -> [(id: String, chatJID: Stri
                 chatJID: row["chat_jid"],
                 status: row["status"],
                 scheduleType: row["schedule_type"],
-                scheduleValue: row["schedule_value"]
+                scheduleValue: row["schedule_value"],
+                contextMode: row["context_mode"]
             )
         }
     }
@@ -161,6 +163,7 @@ func testTelegramDirectScheduleListPauseResumeCancelCommands() async throws {
     let createdTask = try #require(createdTasks.first)
     #expect(createdTask.scheduleType == "cron")
     #expect(createdTask.scheduleValue == "30 8 * * *")
+    #expect(createdTask.contextMode == "isolated")
     let taskID = createdTask.id
 
     _ = await service.ingestInboundEvent(makeInboundEvent(content: "/tasks", messageID: "m2"))

@@ -2099,7 +2099,7 @@ struct ScheduleTaskToolWrapper: Tool {
         ToolParameter(name: "schedule_type", description: "Schedule type: 'cron', 'once', 'interval', or 'recurring' (alias for daily cron)", type: .string),
         ToolParameter(name: "schedule_value", description: "Schedule value (cron expression, ISO date, or interval milliseconds)", type: .string, isRequired: false),
         ToolParameter(name: "time", description: "Alias for recurring daily time in HH:mm (e.g. 08:00)", type: .string, isRequired: false),
-        ToolParameter(name: "context_mode", description: "Context mode: 'group' (with history) or 'isolated' (fresh session)", type: .string, isRequired: false, defaultValue: .string("group"))
+        ToolParameter(name: "context_mode", description: "Context mode: 'group' (with history) or 'isolated' (fresh session)", type: .string, isRequired: false, defaultValue: .string("isolated"))
     ]
     
     let groupFolder: String
@@ -2182,7 +2182,7 @@ struct ScheduleTaskToolWrapper: Tool {
             return .string("Error: invalid schedule arguments. Use schedule_type + schedule_value, or recurring + time (HH:mm).")
         }
 
-        let contextMode = arguments["context_mode"]?.stringValue ?? "group"
+        let contextMode = arguments["context_mode"]?.stringValue ?? "isolated"
         
         let ipcDir = "\(resolveIPCBasePath())/tasks"
         let filename = "\(UUID().uuidString).json"

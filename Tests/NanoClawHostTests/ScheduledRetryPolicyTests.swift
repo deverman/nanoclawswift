@@ -64,3 +64,14 @@ func scheduledRetryBackoffClampsToMax() {
     )
     #expect(delay == 120)
 }
+
+@Test
+func scheduledRetryBackoffUsesFastPathForMissingToolCalls() {
+    let delay = NanoClawHostService.retryBackoffSeconds(
+        for: .missingToolCalls,
+        retryAttempt: 1,
+        initialBackoffSec: 30,
+        maxBackoffSec: 300
+    )
+    #expect(delay == 15)
+}

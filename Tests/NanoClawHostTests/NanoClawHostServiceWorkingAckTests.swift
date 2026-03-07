@@ -21,3 +21,10 @@ func testWorkingAckMessageRepeatUsesStillWorkingText() {
 
     #expect(text == "Andy: Still working on your request, thanks for your patience...")
 }
+
+@Test
+func testShouldSendWorkingAckRespectsCap() {
+    #expect(NanoClawHostService.shouldSendWorkingAck(sentCount: 0, maxUpdates: 1))
+    #expect(!NanoClawHostService.shouldSendWorkingAck(sentCount: 1, maxUpdates: 1))
+    #expect(NanoClawHostService.shouldSendWorkingAck(sentCount: 1, maxUpdates: 2))
+}

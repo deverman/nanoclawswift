@@ -555,12 +555,42 @@ func preferredSwiftExecutablePath(
     }
 
     let home = environment["HOME"] ?? NSHomeDirectory()
-    let pinnedToolchainSwift = "\(home)/Library/Developer/Toolchains/swift-6.2.3-RELEASE.xctoolchain/usr/bin/swift"
-    if isExecutableFile(pinnedToolchainSwift) {
-        return pinnedToolchainSwift
+    let preferredToolchains = [
+        "swift-6.2.4-RELEASE.xctoolchain",
+        "swift-6.2.3-RELEASE.xctoolchain"
+    ]
+    for toolchain in preferredToolchains {
+        let candidate = "\(home)/Library/Developer/Toolchains/\(toolchain)/usr/bin/swift"
+        if isExecutableFile(candidate) {
+            return candidate
+        }
     }
 
     return "swift"
+}
+
+func compatibleSwiftExecutablePath(
+    swiftSDKArgument: String?,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    isExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+) -> String {
+    let preferred = preferredSwiftExecutablePath(
+        environment: environment,
+        isExecutableFile: isExecutableFile
+    )
+
+    guard let swiftSDKArgument else { return preferred }
+    let normalizedSDK = swiftSDKArgument.lowercased()
+    let normalizedPreferred = preferred.lowercased()
+    if normalizedSDK.contains("swift-6.2.3"),
+       normalizedPreferred.contains("swift-6.2.4-release.xctoolchain") {
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        let candidate = "\(home)/Library/Developer/Toolchains/swift-6.2.3-RELEASE.xctoolchain/usr/bin/swift"
+        if isExecutableFile(candidate) {
+            return candidate
+        }
+    }
+    return preferred
 }
 
 func shouldRetryStaticLinuxBuildFailure(_ details: String) -> Bool {
@@ -602,11 +632,17 @@ private func runStaticLinuxBuild(repoRoot: String, buildPath: String, timeout: T
         at: URL(fileURLWithPath: buildPath),
         withIntermediateDirectories: true
     )
-    let swiftCLI = DevRuntime.preferredSwiftCLI
+    let buildArgs = try staticLinuxBuildArguments(buildPath: buildPath)
+    let swiftSDKArgument: String? = {
+        guard let sdkIndex = buildArgs.firstIndex(of: "--swift-sdk"),
+              sdkIndex + 1 < buildArgs.count else { return nil }
+        return buildArgs[sdkIndex + 1]
+    }()
+    let swiftCLI = compatibleSwiftExecutablePath(swiftSDKArgument: swiftSDKArgument)
     print("Using Swift CLI: \(swiftCLI)")
     _ = try DevRuntime.requireSuccess(
         swiftCLI,
-        try staticLinuxBuildArguments(buildPath: buildPath),
+        buildArgs,
         cwd: repoRoot,
         timeout: timeout
     )
@@ -619,13 +655,14 @@ private func runStaticLinuxBuild(repoRoot: String, buildPath: String, timeout: T
 }
 
 func staticLinuxBuildArguments(buildPath: String, linuxTargetTriple: String) -> [String] {
-    [
+    let swiftSDK = preferredStaticLinuxSDKArgument(linuxTargetTriple: linuxTargetTriple)
+    return [
         "build",
         "-c", "release",
         "--product", "nanoclaw-agent",
         "--skip-update",
         "--disable-automatic-resolution",
-        "--swift-sdk", "swift-6.2.3-RELEASE_static-linux-0.0.1",
+        "--swift-sdk", swiftSDK,
         "--triple", linuxTargetTriple,
         "--build-path", buildPath,
     ]
@@ -651,6 +688,49 @@ func inferredLinuxMuslTargetTriple(machine: String) -> String? {
     default:
         return nil
     }
+}
+
+func preferredStaticLinuxSDKArgument(
+    linuxTargetTriple: String,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+) -> String {
+    if let override = environment["NANOCLAW_DEVCTL_SWIFT_SDK"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+       !override.isEmpty {
+        return override
+    }
+
+    let targetArch = linuxTargetTriple
+        .split(separator: "-")
+        .first
+        .map(String.init)?
+        .lowercased() ?? "aarch64"
+    let home = environment["HOME"] ?? NSHomeDirectory()
+    let sdkRoot = "\(home)/Library/org.swift.swiftpm/swift-sdks"
+    let preferredSDKIDs = [
+        "swift-6.2.4-RELEASE_static-linux-0.0.1",
+        "swift-6.2.3-RELEASE_static-linux-0.0.1"
+    ]
+    var installedButArchMismatched: String?
+
+    for sdkID in preferredSDKIDs {
+        let bundlePath = "\(sdkRoot)/\(sdkID).artifactbundle"
+        let base = "\(bundlePath)/\(sdkID)/swift-linux-musl"
+        let concurrencyModule = "\(base)/musl-1.2.5.sdk/\(targetArch)/usr/lib/swift_static/linux-static/_Concurrency.swiftmodule"
+        if fileExists(concurrencyModule) {
+            return sdkID
+        }
+        if fileExists(bundlePath), installedButArchMismatched == nil {
+            installedButArchMismatched = sdkID
+        }
+    }
+
+    if let installedButArchMismatched {
+        return installedButArchMismatched
+    }
+
+    return preferredSDKIDs[0]
 }
 
 func currentMachineIdentifier() -> String {

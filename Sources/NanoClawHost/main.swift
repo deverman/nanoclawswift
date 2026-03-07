@@ -171,6 +171,7 @@ private func runHost(options: ParsedHostOptions, hostEnvironment: HostEnvironmen
             containerTimeoutMs: options.containerTimeoutMs,
             containerPollMs: options.containerPollMs,
             queueJobWatchdogMs: hostEnvironment.queueJobWatchdogMs,
+            scheduledQueueJobWatchdogMs: hostEnvironment.scheduledQueueJobWatchdogMs,
             sessionJanitorIntervalSec: hostEnvironment.sessionJanitorIntervalSec,
             staleClaimReapAgeSec: hostEnvironment.staleClaimReapAgeSec,
             containerPassthroughEnvironment: containerPassthrough

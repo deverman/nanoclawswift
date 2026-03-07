@@ -68,19 +68,28 @@ actor HostMCPRuntime {
     func bootstrap(specs: [ServerSpec]) async throws -> BootstrapResult {
         let desiredSpecs = Dictionary(uniqueKeysWithValues: specs.map { ($0.id, $0) })
 
-        for (serverID, managed) in servers where desiredSpecs[serverID] == nil {
-            terminate(process: managed.process)
-            servers.removeValue(forKey: serverID)
+        let staleServerIDs = servers.keys.filter { desiredSpecs[$0] == nil }
+        for serverID in staleServerIDs {
+            guard let managed = servers.removeValue(forKey: serverID) else {
+                continue
+            }
+            await stopServer(managed)
         }
 
         for spec in specs {
-            if let current = servers[spec.id], current.spec == spec {
-                continue
-            }
             if let current = servers[spec.id] {
-                terminate(process: current.process)
+                if !Self.shouldRestartServer(
+                    currentSpec: current.spec,
+                    desiredSpec: spec,
+                    processIsRunning: current.process.isRunning
+                ) {
+                    continue
+                }
+
                 servers.removeValue(forKey: spec.id)
+                await stopServer(current)
             }
+
             let managed = try await startServer(spec: spec)
             servers[spec.id] = managed
         }
@@ -152,9 +161,10 @@ actor HostMCPRuntime {
         )
     }
 
-    func shutdown() {
-        for (_, managed) in servers {
-            terminate(process: managed.process)
+    func shutdown() async {
+        let existingServers = Array(servers.values)
+        for managed in existingServers {
+            await stopServer(managed)
         }
         servers.removeAll(keepingCapacity: false)
         diagnostics.removeAll(keepingCapacity: false)
@@ -180,16 +190,23 @@ actor HostMCPRuntime {
             output: MCPFileDescriptor(rawValue: CInt(stdinPipe.fileHandleForWriting.fileDescriptor))
         )
         let client = Client(name: "nanoclaw-host-mcp", version: "1.0.0")
-        _ = try await client.connect(transport: transport)
+        let tools: [ToolDescriptor]
+        do {
+            _ = try await client.connect(transport: transport)
+            tools = try await listTools(client: client)
+                .map { tool in
+                    ToolDescriptor(
+                        name: tool.name,
+                        description: tool.description,
+                        inputSchema: tool.inputSchema
+                    )
+                }
+        } catch {
+            await client.disconnect()
+            terminate(process: process)
+            throw error
+        }
 
-        let tools = try await listTools(client: client)
-            .map { tool in
-                ToolDescriptor(
-                    name: tool.name,
-                    description: tool.description,
-                    inputSchema: tool.inputSchema
-                )
-            }
         return ManagedServer(
             spec: spec,
             process: process,
@@ -216,6 +233,22 @@ actor HostMCPRuntime {
             process.terminate()
             process.waitUntilExit()
         }
+    }
+
+    private func stopServer(_ managed: ManagedServer) async {
+        await managed.client.disconnect()
+        terminate(process: managed.process)
+    }
+
+    static func shouldRestartServer(
+        currentSpec: ServerSpec,
+        desiredSpec: ServerSpec,
+        processIsRunning: Bool
+    ) -> Bool {
+        if currentSpec != desiredSpec {
+            return true
+        }
+        return !processIsRunning
     }
 
     private static func resolveWorkingDirectory(_ rawValue: String) -> String {
