@@ -59,6 +59,21 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
+    - name: Install Apple container CLI
+      env:
+        APPLE_CONTAINER_VERSION: 0.10.0
+        APPLE_CONTAINER_PKG_URL: https://github.com/apple/container/releases/download/0.10.0/container-0.10.0-installer-signed.pkg
+        APPLE_CONTAINER_PKG_SHA256: c481ce355524d036c3cddac7fd281e31794d40690bf9a21f732ef3d76fa9fe08
+      run: |
+        set -euo pipefail
+        PKG_PATH="$RUNNER_TEMP/container-${APPLE_CONTAINER_VERSION}-installer-signed.pkg"
+        curl -L --fail --output "$PKG_PATH" "$APPLE_CONTAINER_PKG_URL"
+        echo "${APPLE_CONTAINER_PKG_SHA256}  $PKG_PATH" | shasum -a 256 --check
+        sudo installer -pkg "$PKG_PATH" -target /
+        echo "/usr/local/bin" >> "$GITHUB_PATH"
+        /usr/local/bin/container --version
+        /usr/local/bin/container system start
+
     - name: Setup Swift
       uses: swift-actions/setup-swift@v3
       with:

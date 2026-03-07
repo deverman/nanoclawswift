@@ -57,11 +57,7 @@ private enum DevRuntime {
     }
 
     static var preferredContainerCLI: String {
-        let brewPath = "/opt/homebrew/opt/container/bin/container"
-        if FileManager.default.isExecutableFile(atPath: brewPath) {
-            return brewPath
-        }
-        return "container"
+        preferredContainerExecutablePath()
     }
 
     static var preferredSwiftCLI: String {
@@ -175,6 +171,19 @@ private enum DevRuntime {
         }
         return parsed
     }
+}
+
+func preferredContainerExecutablePath(
+    isExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+) -> String {
+    let preferredPaths = [
+        "/usr/local/bin/container",
+        "/opt/homebrew/opt/container/bin/container"
+    ]
+    for candidate in preferredPaths where isExecutableFile(candidate) {
+        return candidate
+    }
+    return "container"
 }
 
 private func defaultStateRootPath() -> String {

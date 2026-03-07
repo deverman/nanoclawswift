@@ -212,6 +212,35 @@ func testPreferredSwiftExecutablePathFallsBackToSwift() {
 }
 
 @Test
+func testPreferredContainerExecutablePathPrefersSignedInstallerLocation() {
+    let path = preferredContainerExecutablePath(
+        isExecutableFile: { candidate in
+            candidate == "/usr/local/bin/container"
+                || candidate == "/opt/homebrew/opt/container/bin/container"
+        }
+    )
+    #expect(path == "/usr/local/bin/container")
+}
+
+@Test
+func testPreferredContainerExecutablePathFallsBackToBrewLocation() {
+    let path = preferredContainerExecutablePath(
+        isExecutableFile: { candidate in
+            candidate == "/opt/homebrew/opt/container/bin/container"
+        }
+    )
+    #expect(path == "/opt/homebrew/opt/container/bin/container")
+}
+
+@Test
+func testPreferredContainerExecutablePathFallsBackToEnvLookup() {
+    let path = preferredContainerExecutablePath(
+        isExecutableFile: { _ in false }
+    )
+    #expect(path == "container")
+}
+
+@Test
 func testCompatibleSwiftExecutablePathUses623ToolchainFor623StaticSDK() {
     let path = compatibleSwiftExecutablePath(
         swiftSDKArgument: "swift-6.2.3-RELEASE_static-linux-0.0.1",
