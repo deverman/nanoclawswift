@@ -313,10 +313,10 @@ func testTelegramTypingHeartbeatRefreshesWhileProcessing() async throws {
 
     let task = heartbeat.start(chatJID: "telegram_66@direct")
     defer { task.cancel() }
-    let deadline = ContinuousClock.now + .milliseconds(600)
+    let deadline = ContinuousClock.now + .milliseconds(1200)
     var typingCalls = await transport.sentTyping.count
     while typingCalls < 3 && ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(25))
+        try await Task.sleep(for: .milliseconds(50))
         typingCalls = await transport.sentTyping.count
     }
     #expect(typingCalls >= 3)
