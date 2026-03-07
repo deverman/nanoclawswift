@@ -49,10 +49,24 @@ jobs:
   container-build:
     runs-on: macos-26
     needs: build-and-test
+    env:
+      NANOCLAW_DEVCTL_SWIFT_SDK: swift-6.2.4-RELEASE_static-linux-0.0.1
     
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+
+    - name: Cache static Linux SDK
+      uses: actions/cache@v4
+      with:
+        path: ~/Library/org.swift.swiftpm/swift-sdks
+        key: ${{ runner.os }}-${{ runner.arch }}-swift-static-sdk-6.2.4
+
+    - name: Install static Linux SDK
+      run: |
+        swift sdk list | grep -F "$NANOCLAW_DEVCTL_SWIFT_SDK" && exit 0
+        swift sdk install \
+          https://download.swift.org/swift-6.2.4-release/static-sdk/swift-6.2.4-RELEASE/swift-6.2.4-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz
       
     - name: Build container (slim)
       run: swift run nanoclaw-devctl build-agent-image slim
