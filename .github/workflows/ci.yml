@@ -56,6 +56,11 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
+    - name: Setup Swift 6.2.3 for static SDK build
+      uses: swift-actions/setup-swift@v3
+      with:
+        swift-version: '6.2.3'
+
     - name: Cache static Linux SDK
       uses: actions/cache@v4
       with:
