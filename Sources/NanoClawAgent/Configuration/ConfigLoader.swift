@@ -139,9 +139,23 @@ public struct ConfigLoader {
             return nil
         }()
         let fallbackProvider: ModelProvider? = {
-            guard let raw = envFallbackProvider?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !raw.isEmpty else { return nil }
-            return ModelProvider(rawValue: raw)
+            if let raw = envFallbackProvider?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !raw.isEmpty {
+                return ModelProvider(rawValue: raw)
+            }
+
+            // Infer a single global fallback from any secondary provider key that is already present.
+            // This keeps fallback configuration app-wide instead of requiring per-task overrides.
+            if provider != .openai, envOpenAIKey?.isEmpty == false {
+                return .openai
+            }
+            if provider != .kimi, envMoonshotKey?.isEmpty == false {
+                return .kimi
+            }
+            if provider != .anthropic, envAnthropicKey?.isEmpty == false {
+                return .anthropic
+            }
+            return nil
         }()
         let fallbackBaseURL: String? = {
             if let explicit = envFallbackBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines),

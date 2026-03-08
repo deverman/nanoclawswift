@@ -114,6 +114,45 @@ func testConfigLoaderLoadsOpenAIFallbackForKimi() async throws {
 }
 
 @Test
+func testConfigLoaderInfersOpenAIFallbackFromSecondaryKey() async throws {
+    try await TestEnvironmentLock.shared.withEnvs([
+        "MOONSHOT_API_KEY": "test-kimi-key",
+        "OPENAI_API_KEY": "test-openai-key",
+        "MODEL_PROVIDER": "kimi",
+        "NANOCLAW_FALLBACK_PROVIDER": nil,
+        "NANOCLAW_FALLBACK_MODEL": nil,
+        "NANOCLAW_FALLBACK_BASE_URL": nil,
+        "NANOCLAW_FALLBACK_API_KEY": nil
+    ]) {
+        let config = try await ConfigLoader.load(from: "/tmp/nonexistent.json")
+        #expect(config.provider == .kimi)
+        #expect(config.fallbackProvider == .openai)
+        #expect(config.fallbackAPIKey == "test-openai-key")
+        #expect(config.fallbackModel == nil)
+        #expect(config.fallbackBaseURL == nil)
+    }
+}
+
+@Test
+func testConfigLoaderPrefersExplicitFallbackProviderOverInference() async throws {
+    try await TestEnvironmentLock.shared.withEnvs([
+        "MOONSHOT_API_KEY": "test-kimi-key",
+        "OPENAI_API_KEY": "test-openai-key",
+        "ANTHROPIC_API_KEY": "test-anthropic-key",
+        "MODEL_PROVIDER": "kimi",
+        "NANOCLAW_FALLBACK_PROVIDER": "anthropic",
+        "NANOCLAW_FALLBACK_MODEL": nil,
+        "NANOCLAW_FALLBACK_BASE_URL": nil,
+        "NANOCLAW_FALLBACK_API_KEY": nil
+    ]) {
+        let config = try await ConfigLoader.load(from: "/tmp/nonexistent.json")
+        #expect(config.provider == .kimi)
+        #expect(config.fallbackProvider == .anthropic)
+        #expect(config.fallbackAPIKey == "test-anthropic-key")
+    }
+}
+
+@Test
 func testConfigLoaderInheritsPrimaryBaseURLForSameProviderFallback() async throws {
     try await TestEnvironmentLock.shared.withEnvs([
         "OPENAI_API_KEY": "test-openai-key",
