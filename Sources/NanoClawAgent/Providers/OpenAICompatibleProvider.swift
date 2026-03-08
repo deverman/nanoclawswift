@@ -265,7 +265,7 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         }
 
         if let error = lastError,
-           shouldUseFallback(for: error),
+           Self.shouldUseFallback(for: error),
            let fallbackProvider {
             await ProviderRequestDiagnosticsContext.current?.recordFallback(reason: "primary_exhausted")
             logger.warning("Primary provider exhausted; attempting fallback provider.", metadata: [
@@ -315,7 +315,7 @@ public actor OpenAICompatibleProvider: InferenceProvider {
             )
             resetRateLimitState()
         } catch {
-            if shouldUseFallback(for: error), let fallbackProvider {
+            if Self.shouldUseFallback(for: error), let fallbackProvider {
                 await ProviderRequestDiagnosticsContext.current?.recordFallback(reason: "tool_call_error")
                 logger.warning("Primary provider tool call failed; attempting fallback provider.", metadata: [
                     "requestTraceID": "\(requestTraceID)",
@@ -459,13 +459,34 @@ public actor OpenAICompatibleProvider: InferenceProvider {
         return (content, parsedToolCalls, finishReason)
     }
 
-    private func shouldUseFallback(for error: Error) -> Bool {
+    static func shouldUseFallback(for error: Error) -> Bool {
         if let agentError = error as? AgentError,
            case .generationFailed(let reason) = agentError {
-            return reason.contains("429")
-                || reason.localizedCaseInsensitiveContains("temporarily unavailable due to rate limits")
+            return shouldUseFallback(forGenerationFailureReason: reason)
         }
+
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost:
+                return true
+            default:
+                return false
+            }
+        }
+
         return false
+    }
+
+    static func shouldUseFallback(forGenerationFailureReason reason: String) -> Bool {
+        let normalized = reason.lowercased()
+        return normalized.contains("429")
+            || normalized.contains("http 502")
+            || normalized.contains("http 503")
+            || normalized.contains("http 504")
+            || normalized.contains("temporarily unavailable due to rate limits")
+            || normalized.contains("request timed out")
+            || normalized.contains("timed out waiting for response")
+            || normalized.contains("upstream request failed")
     }
 
     private func shouldUseFallbackForBehavioralToolFailure(

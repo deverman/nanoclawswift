@@ -18,6 +18,24 @@ func testParseRetryAfterSecondsReturnsNilWhenMissing() {
 }
 
 @Test
+func testFallbackEligibilityIncludesHTTP502Timeouts() {
+    let reason = #"HTTP 502: {"error":"Upstream request failed: The request timed out."}"#
+    #expect(OpenAICompatibleProvider.shouldUseFallback(forGenerationFailureReason: reason))
+}
+
+@Test
+func testFallbackEligibilityIncludesTransientURLErrors() {
+    #expect(OpenAICompatibleProvider.shouldUseFallback(for: URLError(.timedOut)))
+    #expect(OpenAICompatibleProvider.shouldUseFallback(for: URLError(.networkConnectionLost)))
+}
+
+@Test
+func testFallbackEligibilityExcludesPermanentClientErrors() {
+    let reason = #"HTTP 400: {"error":"Bad request"}"#
+    #expect(!OpenAICompatibleProvider.shouldUseFallback(forGenerationFailureReason: reason))
+}
+
+@Test
 func testRateLimitRetryPolicyUsesLowerAttemptsAndLongerBaseDelay() {
     let policy = OpenAICompatibleProvider.rateLimitRetryPolicy()
     #expect(policy.maxRetries == 2)
