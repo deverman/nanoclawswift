@@ -327,6 +327,18 @@ extension NanoClawHostCtl {
             print("db.path=\(resolvedDBPath)")
             print("")
 
+            let schedulerLines = schedulerEvidenceLines(
+                logFile: logFile,
+                taskID: escapedTaskID.isEmpty ? nil : escapedTaskID,
+                maxTailLines: max(2000, maxRows * 200),
+                maxOutputLines: maxRows * 3
+            )
+            let fallbackByTask = schedulerLines.reduce(into: [String: SchedulerFallbackObservation]()) { result, line in
+                if let observation = SchedulerDiagnosticsLogParser.fallbackObservation(from: line) {
+                    result[observation.taskID] = observation
+                }
+            }
+
             let taskFilterClause: String = if escapedTaskID.isEmpty {
                 ""
             } else {
@@ -369,6 +381,10 @@ extension NanoClawHostCtl {
                         print("   last_result=\(lastResult)")
                     }
                     print("   inferred_failure_cause=\(inferredCause)")
+                    if let fallback = fallbackByTask[id] {
+                        print("   provider_fallback_used=\(fallback.used)")
+                        print("   provider_fallback_reason=\(fallback.reason)")
+                    }
                 }
             }
             print("")
@@ -406,12 +422,6 @@ extension NanoClawHostCtl {
             }
             print("")
 
-            let schedulerLines = schedulerEvidenceLines(
-                logFile: logFile,
-                taskID: escapedTaskID.isEmpty ? nil : escapedTaskID,
-                maxTailLines: max(2000, maxRows * 200),
-                maxOutputLines: maxRows * 3
-            )
             if schedulerLines.isEmpty {
                 print("scheduler_log_evidence=none (log missing, unreadable, or no matching lines)")
             } else {

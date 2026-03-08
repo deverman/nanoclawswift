@@ -64,3 +64,14 @@ func testSchedulerDiagnosticsClassifierReturnsNilForNonErrorStatus() {
     )
     #expect(cause == nil)
 }
+
+@Test
+func testSchedulerDiagnosticsLogParserExtractsFallbackObservation() {
+    let line = "2026-03-08T08:34:39+0800 info nanoclaw.host: [NanoClawHost] Completed scheduled queue job request=sched-task-1771244294918-8232D9-1772929997 group=telegram-direct status=error cause=provider_timeout transient=true providerFallbackUsed=true providerFallbackReason=primary_exhausted"
+    let observation = SchedulerDiagnosticsLogParser.fallbackObservation(from: line)
+    #expect(observation == SchedulerFallbackObservation(
+        taskID: "task-1771244294918-8232D9",
+        used: true,
+        reason: "primary_exhausted"
+    ))
+}

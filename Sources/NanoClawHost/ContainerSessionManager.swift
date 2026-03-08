@@ -29,6 +29,20 @@ enum ContainerSessionError: Error, LocalizedError {
 }
 
 actor ContainerSessionManager {
+    struct AgentConfigFilePayload: Encodable, Equatable {
+        let api_key: String?
+        let model_provider: String?
+        let model_name: String?
+        let base_url: String?
+        let timeout: Int?
+        let assistant_name: String?
+        let fallback_provider: String?
+        let fallback_model: String?
+        let fallback_base_url: String?
+        let fallback_api_key: String?
+        let fallback_rpm_limit: String?
+    }
+
     private final class GroupSession {
         let group: RegisteredGroupRow
         let containerName: String
@@ -69,6 +83,39 @@ actor ContainerSessionManager {
     private let config: HostRuntimeConfig
     private let logger: Logger
     private var sessions: [String: GroupSession] = [:]
+    private static let secretEnvironmentKeys: Set<String> = [
+        "OPENAI_API_KEY",
+        "MOONSHOT_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "NANOCLAW_FALLBACK_API_KEY"
+    ]
+
+    nonisolated static func shouldPassEnvironmentKeyToContainer(_ key: String) -> Bool {
+        !secretEnvironmentKeys.contains(key)
+    }
+
+    nonisolated static func agentConfigFilePayload(
+        passthroughEnvironment: [String: String],
+        containerTimeoutMs: Int
+    ) -> AgentConfigFilePayload {
+        let fallbackProvider = resolvedFallbackProvider(from: passthroughEnvironment)
+        return AgentConfigFilePayload(
+            api_key: resolvedPrimaryAPIKey(from: passthroughEnvironment),
+            model_provider: passthroughEnvironment["MODEL_PROVIDER"],
+            model_name: passthroughEnvironment["MODEL_NAME"],
+            base_url: passthroughEnvironment["BASE_URL"],
+            timeout: resolvedAgentTimeoutSeconds(
+                passthroughEnvironment: passthroughEnvironment,
+                containerTimeoutMs: containerTimeoutMs
+            ),
+            assistant_name: passthroughEnvironment["ASSISTANT_NAME"],
+            fallback_provider: fallbackProvider,
+            fallback_model: passthroughEnvironment["NANOCLAW_FALLBACK_MODEL"],
+            fallback_base_url: passthroughEnvironment["NANOCLAW_FALLBACK_BASE_URL"],
+            fallback_api_key: resolvedFallbackAPIKey(from: passthroughEnvironment),
+            fallback_rpm_limit: passthroughEnvironment["NANOCLAW_FALLBACK_RPM_LIMIT"]
+        )
+    }
 
     init(config: HostRuntimeConfig, logger: Logger) {
         self.config = config
@@ -256,6 +303,8 @@ actor ContainerSessionManager {
             .appendingPathComponent("sessions")
             .appendingPathComponent(group.folder)
             .appendingPathComponent(".claude")
+        let agentConfigDir = groupDir.appendingPathComponent(".nanoclaw")
+        let agentConfigFile = agentConfigDir.appendingPathComponent("config.json")
         let logsDir = groupDir.appendingPathComponent("logs")
         let sharedMemoryDir = URL(fileURLWithPath: config.storeDir)
             .appendingPathComponent("shared-memory")
@@ -266,6 +315,7 @@ actor ContainerSessionManager {
         try fileManager.createDirectory(at: tasksDir, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: messagesDir, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: agentConfigDir, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: logsDir, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: sharedMemoryDir, withIntermediateDirectories: true)
         try cleanIpcRuntimeArtifacts(
@@ -315,6 +365,7 @@ actor ContainerSessionManager {
             args.append(contentsOf: ["-v", "\(config.projectRoot):/workspace/project"])
         }
 
+        try writeAgentConfigFile(to: agentConfigFile)
         let containerEnvironment = buildContainerEnvironment(groupFolder: group.folder)
         if let relayBaseURL = containerEnvironment.first(where: { $0.hasPrefix("BASE_URL=") }) {
             logger.info("Container env relay target group=\(group.folder) \(relayBaseURL)")
@@ -328,7 +379,7 @@ actor ContainerSessionManager {
 
         args.append(config.containerImage)
         args.append(contentsOf: [
-            "--config", "/workspace/config.json",
+            "--config", "/workspace/group/.nanoclaw/config.json",
             "--group-folder", group.folder,
             "--chat-jid", group.jid,
             "--daemon"
@@ -423,6 +474,9 @@ actor ContainerSessionManager {
     private func buildContainerEnvironment(groupFolder: String) -> [String] {
         var env: [String] = []
         for key in HostEnvironmentConfig.containerPassthroughKeys {
+            if !Self.shouldPassEnvironmentKeyToContainer(key) {
+                continue
+            }
             if let value = config.containerPassthroughEnvironment[key], !value.isEmpty {
                 env.append("\(key)=\(value)")
             }
@@ -445,6 +499,93 @@ actor ContainerSessionManager {
         env.append("NANOCLAW_GROUP_ISOLATED_MOUNT=1")
         env.append("CODEX_HOME=/home/nanoclaw/.codex")
         return env
+    }
+
+    private func writeAgentConfigFile(to url: URL) throws {
+        let payload = Self.agentConfigFilePayload(
+            passthroughEnvironment: config.containerPassthroughEnvironment,
+            containerTimeoutMs: config.containerTimeoutMs
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(payload)
+        try atomicWrite(data: data, to: url)
+    }
+
+    private static func resolvedFallbackProvider(from passthroughEnvironment: [String: String]) -> String? {
+        if let explicit = passthroughEnvironment["NANOCLAW_FALLBACK_PROVIDER"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !explicit.isEmpty {
+            return explicit
+        }
+
+        let primary = passthroughEnvironment["MODEL_PROVIDER"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if primary != "openai", passthroughEnvironment["OPENAI_API_KEY"]?.isEmpty == false {
+            return "openai"
+        }
+        if primary != "anthropic", passthroughEnvironment["ANTHROPIC_API_KEY"]?.isEmpty == false {
+            return "anthropic"
+        }
+        if primary != "kimi", primary != "moonshot",
+           passthroughEnvironment["MOONSHOT_API_KEY"]?.isEmpty == false {
+            return "kimi"
+        }
+        return nil
+    }
+
+    private static func resolvedPrimaryAPIKey(from passthroughEnvironment: [String: String]) -> String? {
+        let provider = passthroughEnvironment["MODEL_PROVIDER"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch provider {
+        case "openai":
+            return passthroughEnvironment["OPENAI_API_KEY"]
+        case "anthropic":
+            return passthroughEnvironment["ANTHROPIC_API_KEY"]
+        case "kimi", "moonshot":
+            return passthroughEnvironment["MOONSHOT_API_KEY"]
+        default:
+            return passthroughEnvironment["MOONSHOT_API_KEY"]
+                ?? passthroughEnvironment["OPENAI_API_KEY"]
+                ?? passthroughEnvironment["ANTHROPIC_API_KEY"]
+        }
+    }
+
+    private static func resolvedFallbackAPIKey(from passthroughEnvironment: [String: String]) -> String? {
+        if let explicit = passthroughEnvironment["NANOCLAW_FALLBACK_API_KEY"],
+           !explicit.isEmpty {
+            return explicit
+        }
+        let provider = resolvedFallbackProvider(from: passthroughEnvironment)
+        switch provider {
+        case "openai":
+            return passthroughEnvironment["OPENAI_API_KEY"]
+        case "anthropic":
+            return passthroughEnvironment["ANTHROPIC_API_KEY"]
+        case "kimi", "moonshot":
+            return passthroughEnvironment["MOONSHOT_API_KEY"]
+        default:
+            return nil
+        }
+    }
+
+    private static func resolvedAgentTimeoutSeconds(
+        passthroughEnvironment: [String: String],
+        containerTimeoutMs: Int
+    ) -> Int {
+        if let raw = passthroughEnvironment["TIMEOUT"],
+           let parsed = Int(raw),
+           parsed > 0 {
+            return parsed
+        }
+        let hostTimeoutSeconds = max(30, containerTimeoutMs / 1000)
+        var defaultAgentTimeout = min(180, max(45, hostTimeoutSeconds - 15))
+        if defaultAgentTimeout >= hostTimeoutSeconds {
+            defaultAgentTimeout = max(30, hostTimeoutSeconds - 5)
+        }
+        return defaultAgentTimeout
     }
 
     nonisolated static func resolveHostSkillsRoot(

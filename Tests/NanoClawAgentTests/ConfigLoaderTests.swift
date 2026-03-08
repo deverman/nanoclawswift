@@ -1,5 +1,6 @@
 import Testing
 @testable import NanoClawAgent
+import Foundation
 
 @Test
 func testConfigLoaderUsesOpenAIKey() async throws {
@@ -166,5 +167,42 @@ func testConfigLoaderInheritsPrimaryBaseURLForSameProviderFallback() async throw
         #expect(config.effectiveBaseURL == "http://192.168.64.1:18081/relay/openai/v1")
         #expect(config.fallbackProvider == .openai)
         #expect(config.fallbackBaseURL == "http://192.168.64.1:18081/relay/openai/v1")
+    }
+}
+
+@Test
+func testConfigLoaderReadsFallbackSettingsFromConfigFile() async throws {
+    let tempURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nanoclaw-config-\(UUID().uuidString).json")
+    let json = """
+    {
+      "api_key": "test-kimi-key",
+      "model_provider": "kimi",
+      "fallback_provider": "openai",
+      "fallback_model": "gpt-4.1-mini",
+      "fallback_base_url": "https://api.openai.com/v1",
+      "fallback_api_key": "test-openai-key",
+      "fallback_rpm_limit": "5"
+    }
+    """
+    try Data(json.utf8).write(to: tempURL)
+    defer { try? FileManager.default.removeItem(at: tempURL) }
+
+    try await TestEnvironmentLock.shared.withEnvs([
+        "MOONSHOT_API_KEY": nil,
+        "OPENAI_API_KEY": nil,
+        "NANOCLAW_FALLBACK_PROVIDER": nil,
+        "NANOCLAW_FALLBACK_MODEL": nil,
+        "NANOCLAW_FALLBACK_BASE_URL": nil,
+        "NANOCLAW_FALLBACK_API_KEY": nil,
+        "NANOCLAW_FALLBACK_RPM_LIMIT": nil
+    ]) {
+        let config = try await ConfigLoader.load(from: tempURL.path)
+        #expect(config.provider == .kimi)
+        #expect(config.fallbackProvider == .openai)
+        #expect(config.fallbackModel == .gpt41Mini)
+        #expect(config.fallbackBaseURL == "https://api.openai.com/v1")
+        #expect(config.fallbackAPIKey == "test-openai-key")
+        #expect(config.fallbackRequestsPerMinuteLimit == 5)
     }
 }

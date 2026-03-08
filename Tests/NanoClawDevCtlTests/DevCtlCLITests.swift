@@ -134,6 +134,29 @@ func testPreferredStaticLinuxSDKArgumentFallsBackToLegacy623BundleWhenOnlyLegacy
 }
 
 @Test
+func testInstalledSwiftSDKBundlePathResolvesExistingBundle() {
+    let expected = "/Users/test/Library/org.swift.swiftpm/swift-sdks/swift-6.2.4-RELEASE_static-linux-0.1.0.artifactbundle"
+    let resolved = installedSwiftSDKBundlePath(
+        sdkID: "swift-6.2.4-RELEASE_static-linux-0.1.0",
+        environment: ["HOME": "/Users/test"],
+        fileExists: { path in
+            path == expected
+        }
+    )
+    #expect(resolved == expected)
+}
+
+@Test
+func testInstalledSwiftSDKBundlePathReturnsNilWhenBundleMissing() {
+    let resolved = installedSwiftSDKBundlePath(
+        sdkID: "swift-6.2.4-RELEASE_static-linux-0.1.0",
+        environment: ["HOME": "/Users/test"],
+        fileExists: { _ in false }
+    )
+    #expect(resolved == nil)
+}
+
+@Test
 func testInferredLinuxMuslTargetTripleMapsKnownArchitectures() {
     #expect(inferredLinuxMuslTargetTriple(machine: "arm64") == "aarch64-swift-linux-musl")
     #expect(inferredLinuxMuslTargetTriple(machine: "aarch64") == "aarch64-swift-linux-musl")

@@ -66,3 +66,49 @@ enum SchedulerDiagnosticsClassifier {
         return .unknown
     }
 }
+
+struct SchedulerFallbackObservation: Equatable {
+    let taskID: String
+    let used: Bool
+    let reason: String
+}
+
+enum SchedulerDiagnosticsLogParser {
+    static func fallbackObservation(from line: String) -> SchedulerFallbackObservation? {
+        guard line.contains("Completed scheduled queue job"),
+              line.contains("providerFallbackUsed=") else {
+            return nil
+        }
+
+        guard let requestRange = line.range(of: "request=sched-") else {
+            return nil
+        }
+        let requestTail = line[requestRange.upperBound...]
+        let requestID = requestTail.split(separator: " ").first.map(String.init) ?? ""
+        guard !requestID.isEmpty else { return nil }
+
+        let taskID = extractTaskID(fromScheduledRequestID: requestID)
+        guard !taskID.isEmpty else { return nil }
+
+        let used = line.contains("providerFallbackUsed=true")
+        let reason = extractField(named: "providerFallbackReason", from: line) ?? "none"
+        return SchedulerFallbackObservation(taskID: taskID, used: used, reason: reason)
+    }
+
+    private static func extractTaskID(fromScheduledRequestID requestID: String) -> String {
+        guard requestID.hasPrefix("task-") else { return "" }
+        guard let lastDash = requestID.lastIndex(of: "-") else { return requestID }
+        let suffix = requestID[requestID.index(after: lastDash)...]
+        if suffix.allSatisfy(\.isNumber) {
+            return String(requestID[..<lastDash])
+        }
+        return requestID
+    }
+
+    private static func extractField(named name: String, from line: String) -> String? {
+        guard let range = line.range(of: "\(name)=") else { return nil }
+        let tail = line[range.upperBound...]
+        let value = tail.split(separator: " ").first.map(String.init) ?? ""
+        return value.isEmpty ? nil : value
+    }
+}

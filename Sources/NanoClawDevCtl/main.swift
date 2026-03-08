@@ -671,12 +671,19 @@ private func runStaticLinuxBuild(repoRoot: String, buildPath: String, timeout: T
         at: URL(fileURLWithPath: buildPath),
         withIntermediateDirectories: true
     )
-    let buildArgs = try staticLinuxBuildArguments(buildPath: buildPath)
+    var buildArgs = try staticLinuxBuildArguments(buildPath: buildPath)
     let swiftSDKArgument: String? = {
         guard let sdkIndex = buildArgs.firstIndex(of: "--swift-sdk"),
               sdkIndex + 1 < buildArgs.count else { return nil }
         return buildArgs[sdkIndex + 1]
     }()
+    if let swiftSDKArgument,
+       let isolatedSwiftSDKsPath = try prepareIsolatedSwiftSDKsPath(
+        sdkID: swiftSDKArgument,
+        buildPath: buildPath
+       ) {
+        buildArgs.insert(contentsOf: ["--swift-sdks-path", isolatedSwiftSDKsPath], at: 1)
+    }
     let swiftCLI = compatibleSwiftExecutablePath(swiftSDKArgument: swiftSDKArgument)
     print("Using Swift CLI: \(swiftCLI)")
     _ = try DevRuntime.requireSuccess(
@@ -691,6 +698,38 @@ private func runStaticLinuxBuild(repoRoot: String, buildPath: String, timeout: T
         throw DevCtlError.fileNotFound("Build artifact missing at \(staticBuildOutput)")
     }
     return staticBuildOutput
+}
+
+private func prepareIsolatedSwiftSDKsPath(
+    sdkID: String,
+    buildPath: String,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) throws -> String? {
+    guard let bundlePath = installedSwiftSDKBundlePath(sdkID: sdkID, environment: environment) else {
+        return nil
+    }
+
+    let fileManager = FileManager.default
+    let isolatedRoot = URL(fileURLWithPath: buildPath)
+        .appendingPathComponent("swift-sdks-isolated", isDirectory: true)
+    let linkPath = isolatedRoot.appendingPathComponent("\(sdkID).artifactbundle", isDirectory: true)
+
+    if fileManager.fileExists(atPath: isolatedRoot.path) {
+        try? fileManager.removeItem(at: isolatedRoot)
+    }
+    try fileManager.createDirectory(at: isolatedRoot, withIntermediateDirectories: true)
+    try fileManager.createSymbolicLink(atPath: linkPath.path, withDestinationPath: bundlePath)
+    return isolatedRoot.path
+}
+
+func installedSwiftSDKBundlePath(
+    sdkID: String,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+) -> String? {
+    let home = environment["HOME"] ?? NSHomeDirectory()
+    let bundlePath = "\(home)/Library/org.swift.swiftpm/swift-sdks/\(sdkID).artifactbundle"
+    return fileExists(bundlePath) ? bundlePath : nil
 }
 
 func staticLinuxBuildArguments(buildPath: String, linuxTargetTriple: String) -> [String] {

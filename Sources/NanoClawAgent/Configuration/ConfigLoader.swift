@@ -139,7 +139,8 @@ public struct ConfigLoader {
             return nil
         }()
         let fallbackProvider: ModelProvider? = {
-            if let raw = envFallbackProvider?.trimmingCharacters(in: .whitespacesAndNewlines),
+            if let raw = (envFallbackProvider ?? fileConfig.fallback_provider)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
                !raw.isEmpty {
                 return ModelProvider(rawValue: raw)
             }
@@ -158,7 +159,8 @@ public struct ConfigLoader {
             return nil
         }()
         let fallbackBaseURL: String? = {
-            if let explicit = envFallbackBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+            if let explicit = (envFallbackBaseURL ?? fileConfig.fallback_base_url)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
                !explicit.isEmpty {
                 return explicit
             }
@@ -170,13 +172,15 @@ public struct ConfigLoader {
             return nil
         }()
         let fallbackModel: ModelName? = {
-            guard let raw = envFallbackModel?.trimmingCharacters(in: .whitespacesAndNewlines),
+            guard let raw = (envFallbackModel ?? fileConfig.fallback_model)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
                   !raw.isEmpty else { return nil }
             return ModelName(rawValue: raw)
         }()
         let fallbackAPIKey: String? = {
             guard let fallbackProvider else { return nil }
-            if let explicit = envFallbackAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+            if let explicit = (envFallbackAPIKey ?? fileConfig.fallback_api_key)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
                !explicit.isEmpty {
                 return explicit
             }
@@ -190,7 +194,9 @@ public struct ConfigLoader {
             }
         }()
         let fallbackRequestsPerMinuteLimit: Int? = {
-            if let raw = envFallbackRPM, let parsed = Int(raw), parsed > 0 {
+            if let raw = envFallbackRPM ?? fileConfig.fallback_rpm_limit,
+               let parsed = Int(raw),
+               parsed > 0 {
                 return parsed
             }
             return nil
@@ -223,6 +229,11 @@ private struct FileConfig: Codable {
     var timeout: Int?
     var max_tokens: Int?
     var assistant_name: String?
+    var fallback_provider: String?
+    var fallback_model: String?
+    var fallback_base_url: String?
+    var fallback_api_key: String?
+    var fallback_rpm_limit: String?
 }
 
 /// Configuration loading errors
