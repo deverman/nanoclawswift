@@ -75,6 +75,31 @@ struct SchedulerFallbackObservation: Equatable {
 }
 
 enum SchedulerDiagnosticsLogParser {
+    static func evidenceLines(
+        from raw: String,
+        taskID: String?,
+        maxTailLines: Int,
+        maxOutputLines: Int
+    ) -> [String] {
+        let allLines = raw.split(whereSeparator: \.isNewline).map(String.init)
+        let tailLines = Array(allLines.suffix(max(1, maxTailLines)))
+
+        let tailMatches = filteredEvidenceLines(
+            from: tailLines,
+            taskID: taskID,
+            maxOutputLines: maxOutputLines
+        )
+        if !tailMatches.isEmpty {
+            return tailMatches
+        }
+
+        return filteredEvidenceLines(
+            from: allLines,
+            taskID: taskID,
+            maxOutputLines: maxOutputLines
+        )
+    }
+
     static func fallbackObservation(from line: String) -> SchedulerFallbackObservation? {
         guard line.contains("Completed scheduled queue job"),
               line.contains("providerFallbackUsed=") else {
@@ -109,6 +134,34 @@ enum SchedulerDiagnosticsLogParser {
             return String(requestID[..<lastDash])
         }
         return requestID
+    }
+
+    private static func filteredEvidenceLines(
+        from lines: [String],
+        taskID: String?,
+        maxOutputLines: Int
+    ) -> [String] {
+        let patterns = [
+            "Scheduled catch-up enqueued",
+            "Processing queue job request=sched-",
+            "Completed scheduled queue job",
+            "Scheduler catch-up failed"
+        ]
+
+        var matches = lines.filter { line in
+            patterns.contains { line.contains($0) }
+        }
+
+        if let taskID, !taskID.isEmpty {
+            matches = matches.filter { line in
+                line.contains(taskID) || line.contains("Scheduler catch-up")
+            }
+        }
+
+        if matches.count > maxOutputLines {
+            return Array(matches.suffix(maxOutputLines))
+        }
+        return matches
     }
 
     private static func extractField(named name: String, from line: String) -> String? {

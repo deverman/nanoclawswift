@@ -610,33 +610,12 @@ private func schedulerEvidenceLines(
 ) -> [String] {
     guard FileManager.default.fileExists(atPath: logFile) else { return [] }
     guard let raw = try? String(contentsOfFile: logFile, encoding: .utf8) else { return [] }
-    let candidateLines = raw
-        .split(whereSeparator: \.isNewline)
-        .map(String.init)
-        .suffix(max(1, maxTailLines))
-
-    let patterns = [
-        "Scheduled catch-up enqueued",
-        "Processing queue job request=sched-",
-        "Completed scheduled queue job",
-        "Scheduler catch-up failed"
-    ]
-
-    var matches = candidateLines
-        .filter { line in
-            patterns.contains { line.contains($0) }
-        }
-
-    if let taskID, !taskID.isEmpty {
-        matches = matches.filter { line in
-            line.contains(taskID) || line.contains("Scheduler catch-up")
-        }
-    }
-
-    if matches.count > maxOutputLines {
-        return Array(matches.suffix(maxOutputLines))
-    }
-    return matches
+    return SchedulerDiagnosticsLogParser.evidenceLines(
+        from: raw,
+        taskID: taskID,
+        maxTailLines: maxTailLines,
+        maxOutputLines: maxOutputLines
+    )
 }
 
 NanoClawHostCtl.main()

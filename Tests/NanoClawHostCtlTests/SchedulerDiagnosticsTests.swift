@@ -99,3 +99,24 @@ func testLatestFallbackObservationWinsForSameTask() {
         reason: "tool_call_error"
     ))
 }
+
+@Test
+func testEvidenceLinesFallsBackToFullLogWhenTailHasNoSchedulerEntries() {
+    let earlier = """
+    2026-03-09T07:04:19+0800 info nanoclaw.host: [NanoClawHost] Processing queue job request=sched-task-1771472580665-A8449F-1773011059 group=telegram-direct scheduled=true queueWaitMs=0
+    2026-03-09T07:07:17+0800 info nanoclaw.host: [NanoClawHost] Completed scheduled queue job request=sched-task-1771472580665-A8449F-1773011059 group=telegram-direct status=success cause=none transient=false totalMs=177639 providerFallbackUsed=true providerFallbackReason=tool_call_error
+    """
+    let trailingNoise = Array(repeating: "2026-03-09T13:13:09+0800 error nanoclaw.host: [SwiftTelegramBot] Reason: The Internet connection appears to be offline.", count: 10)
+        .joined(separator: "\n")
+    let raw = earlier + "\n" + trailingNoise
+
+    let evidence = SchedulerDiagnosticsLogParser.evidenceLines(
+        from: raw,
+        taskID: "task-1771472580665-A8449F",
+        maxTailLines: 3,
+        maxOutputLines: 5
+    )
+
+    #expect(evidence.count == 2)
+    #expect(evidence.contains { $0.contains("providerFallbackUsed=true") })
+}
