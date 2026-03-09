@@ -68,6 +68,7 @@ enum SchedulerDiagnosticsClassifier {
 }
 
 struct SchedulerFallbackObservation: Equatable {
+    let timestamp: String
     let taskID: String
     let used: Bool
     let reason: String
@@ -77,6 +78,11 @@ enum SchedulerDiagnosticsLogParser {
     static func fallbackObservation(from line: String) -> SchedulerFallbackObservation? {
         guard line.contains("Completed scheduled queue job"),
               line.contains("providerFallbackUsed=") else {
+            return nil
+        }
+
+        let timestamp = line.split(separator: " ").first.map(String.init) ?? ""
+        guard !timestamp.isEmpty else {
             return nil
         }
 
@@ -92,7 +98,7 @@ enum SchedulerDiagnosticsLogParser {
 
         let used = line.contains("providerFallbackUsed=true")
         let reason = extractField(named: "providerFallbackReason", from: line) ?? "none"
-        return SchedulerFallbackObservation(taskID: taskID, used: used, reason: reason)
+        return SchedulerFallbackObservation(timestamp: timestamp, taskID: taskID, used: used, reason: reason)
     }
 
     private static func extractTaskID(fromScheduledRequestID requestID: String) -> String {

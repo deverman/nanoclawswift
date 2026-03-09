@@ -335,6 +335,9 @@ extension NanoClawHostCtl {
             )
             let fallbackByTask = schedulerLines.reduce(into: [String: SchedulerFallbackObservation]()) { result, line in
                 if let observation = SchedulerDiagnosticsLogParser.fallbackObservation(from: line) {
+                    if let existing = result[observation.taskID], existing.timestamp > observation.timestamp {
+                        return
+                    }
                     result[observation.taskID] = observation
                 }
             }

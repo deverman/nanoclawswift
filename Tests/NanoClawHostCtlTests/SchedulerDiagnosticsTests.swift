@@ -70,8 +70,32 @@ func testSchedulerDiagnosticsLogParserExtractsFallbackObservation() {
     let line = "2026-03-08T08:34:39+0800 info nanoclaw.host: [NanoClawHost] Completed scheduled queue job request=sched-task-1771244294918-8232D9-1772929997 group=telegram-direct status=error cause=provider_timeout transient=true providerFallbackUsed=true providerFallbackReason=primary_exhausted"
     let observation = SchedulerDiagnosticsLogParser.fallbackObservation(from: line)
     #expect(observation == SchedulerFallbackObservation(
+        timestamp: "2026-03-08T08:34:39+0800",
         taskID: "task-1771244294918-8232D9",
         used: true,
         reason: "primary_exhausted"
+    ))
+}
+
+@Test
+func testLatestFallbackObservationWinsForSameTask() {
+    let older = "2026-03-08T07:01:58+0800 info nanoclaw.host: [NanoClawHost] Completed scheduled queue job request=sched-task-1771472580665-A8449F-1772924416 group=telegram-direct status=success cause=none transient=false providerFallbackUsed=false providerFallbackReason=none"
+    let newer = "2026-03-09T07:07:17+0800 info nanoclaw.host: [NanoClawHost] Completed scheduled queue job request=sched-task-1771472580665-A8449F-1773011059 group=telegram-direct status=success cause=none transient=false providerFallbackUsed=true providerFallbackReason=tool_call_error"
+
+    let summary = [older, newer].reduce(into: [String: SchedulerFallbackObservation]()) { result, line in
+        guard let observation = SchedulerDiagnosticsLogParser.fallbackObservation(from: line) else {
+            return
+        }
+        if let existing = result[observation.taskID], existing.timestamp > observation.timestamp {
+            return
+        }
+        result[observation.taskID] = observation
+    }
+
+    #expect(summary["task-1771472580665-A8449F"] == SchedulerFallbackObservation(
+        timestamp: "2026-03-09T07:07:17+0800",
+        taskID: "task-1771472580665-A8449F",
+        used: true,
+        reason: "tool_call_error"
     ))
 }
